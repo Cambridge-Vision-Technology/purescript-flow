@@ -109,6 +109,9 @@ processWorkflow (Flow.Types.Par parCps) st =
 processWorkflow (Flow.Types.Choice choiceCps) st =
   processChoiceCPS choiceCps st
 
+processWorkflow (Flow.Types.Request requestCps) st =
+  processRequestCPS requestCps st
+
 -- | Process sequential composition (unwrap existential)
 processSeq :: forall i o a b x. DiagramState -> Flow.Types.SeqF i o a b x -> NodeResult
 processSeq st (Flow.Types.SeqF w1 w2) =
@@ -184,3 +187,20 @@ processChoiceWorkflows leftW rightW st =
     st7 = addEdge rightResult.exitId mergeId st6
   in
     { entryId: decisionId, exitId: mergeId, state: st7 }
+
+-- | Process request effect (unwrap CPS)
+-- |
+-- | NOTE: Request nodes are shown as hexagon "Effect" nodes. The continuation
+-- | workflow cannot be statically analyzed because it depends on the runtime
+-- | response value. We only show where the effect happens, not what follows.
+processRequestCPS :: forall i o a b. Flow.Types.RequestCPS i o a b -> DiagramState -> NodeResult
+processRequestCPS (Flow.Types.RequestCPS _) st =
+  let
+    Data.Tuple.Tuple effectId st' = freshId st
+    st1 = addEffectNode effectId "Effect" st'
+  in
+    { entryId: effectId, exitId: effectId, state: st1 }
+
+-- | Add an effect (hexagon) node for Request visualization
+addEffectNode :: String -> String -> DiagramState -> DiagramState
+addEffectNode nodeId label = addLine (nodeId <> "{{" <> escapeLabel label <> "}}")

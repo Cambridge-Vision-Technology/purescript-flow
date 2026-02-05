@@ -4,12 +4,14 @@ import Prelude
 
 import Control.Category as Control.Category
 import Data.Either as Data.Either
+import Data.Functor.Variant as Data.Functor.Variant
 import Data.Profunctor.Choice as Data.Profunctor.Choice
 import Data.Profunctor.Strong as Data.Profunctor.Strong
 import Data.String as Data.String
 import Data.Tuple as Data.Tuple
 import Flow.Interpret.Diagram as Flow.Interpret.Diagram
 import Flow.Types as Flow.Types
+import Type.Proxy as Type.Proxy
 
 -- | Test: Simple Pure workflow produces minimal Mermaid
 testPureWorkflow :: String
@@ -161,3 +163,30 @@ testChoiceLeft =
     workflow = Data.Profunctor.Choice.left doubleW
   in
     Flow.Interpret.Diagram.toMermaid workflow
+
+-- | Effect functor for testing
+data TestF a = TestOp String (String -> a)
+
+derive instance Functor TestF
+
+type TEST r = (test :: TestF | r)
+
+-- | Test: Request workflow produces hexagon effect node
+testRequestWorkflow :: String
+testRequestWorkflow =
+  let
+    workflow :: Flow.Types.Workflow () (TEST ()) String String
+    workflow = Flow.Types.mkRequest
+      (\input -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "test") (TestOp input identity))
+      (\response -> Flow.Types.Pure identity)
+  in
+    Flow.Interpret.Diagram.toMermaid workflow
+
+-- | Verify request workflow contains effect node
+verifyRequestContainsEffectNode :: Boolean
+verifyRequestContainsEffectNode =
+  let
+    output = testRequestWorkflow
+  in
+    Data.String.contains (Data.String.Pattern "flowchart TD") output
+      && Data.String.contains (Data.String.Pattern "{{Effect}}") output

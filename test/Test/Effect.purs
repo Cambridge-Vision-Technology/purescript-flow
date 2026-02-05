@@ -4,9 +4,12 @@ import Prelude
 
 import Control.Category as Control.Category
 import Data.Either as Data.Either
+import Data.Functor.Variant as Data.Functor.Variant
+import Data.Identity as Data.Identity
 import Data.Tuple as Data.Tuple
 import Flow.Interpret.Effect as Flow.Interpret.Effect
 import Flow.Types as Flow.Types
+import Type.Proxy as Type.Proxy
 
 -- | Test: Pure workflow executes correctly
 -- | A pure function lifted into a workflow should apply the function.
@@ -257,6 +260,77 @@ testNamedStepsExecution =
   in
     result == -20
 
+-- | Effect functor for testing
+data CounterF a = Increment (Int -> a) | GetCount (Int -> a)
+
+derive instance Functor CounterF
+
+type COUNTER r = (counter :: CounterF | r)
+
+-- | Test: Request workflow executes with handler (using Identity monad)
+testRequestWorkflow :: Boolean
+testRequestWorkflow =
+  let
+    workflow :: Flow.Types.Workflow () (COUNTER ()) Unit Int
+    workflow = Flow.Types.mkRequest
+      (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (GetCount identity))
+      (\count -> Flow.Types.Pure (\_ -> count))
+
+    handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity (COUNTER ())
+    handler = Data.Functor.Variant.on (Type.Proxy.Proxy :: _ "counter")
+      ( \op -> case op of
+          GetCount k -> Data.Identity.Identity (k 42)
+          Increment k -> Data.Identity.Identity (k 1)
+      )
+      Data.Functor.Variant.case_
+
+    Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow unit
+  in
+    result == 42
+
+-- | Test: Sequential requests
+testSequentialRequests :: Boolean
+testSequentialRequests =
+  let
+    getW :: Flow.Types.Workflow () (COUNTER ()) Unit Int
+    getW = Flow.Types.mkRequest
+      (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (GetCount identity))
+      (\count -> Flow.Types.Pure (\_ -> count))
+
+    incW :: Flow.Types.Workflow () (COUNTER ()) Unit Int
+    incW = Flow.Types.mkRequest
+      (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (Increment identity))
+      (\delta -> Flow.Types.Pure (\_ -> delta))
+
+    workflow :: Flow.Types.Workflow () (COUNTER ()) Unit Int
+    workflow = incW Control.Category.>>> Flow.Types.Pure (\_ -> unit) Control.Category.>>> getW
+
+    handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity (COUNTER ())
+    handler = Data.Functor.Variant.on (Type.Proxy.Proxy :: _ "counter")
+      ( \op -> case op of
+          GetCount k -> Data.Identity.Identity (k 100)
+          Increment k -> Data.Identity.Identity (k 1)
+      )
+      Data.Functor.Variant.case_
+
+    Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow unit
+  in
+    result == 100
+
+-- | Test: Pure workflows work with runWorkflowM
+testPureWithMonadicRunner :: Boolean
+testPureWithMonadicRunner =
+  let
+    workflow :: Flow.Types.Workflow () () Int Int
+    workflow = Flow.Types.Pure (_ * 2)
+
+    handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity ()
+    handler = Data.Functor.Variant.case_
+
+    Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow 5
+  in
+    result == 10
+
 -- | Aggregate all tests for easy verification
 allTestsPass :: Boolean
 allTestsPass =
@@ -274,3 +348,6 @@ allTestsPass =
     && testCategoryIdentityLeft
     && testCategoryIdentityRight
     && testNamedStepsExecution
+    && testRequestWorkflow
+    && testSequentialRequests
+    && testPureWithMonadicRunner
