@@ -1,0 +1,39 @@
+project:
+  name: "purescript-flow"
+  tags:
+    [
+      "general",
+      "nix",
+      "purescript",
+    ]
+  description: "Platform-agnostic workflow composition library"
+  header: |
+    # purescript-flow
+
+    Platform-agnostic workflow composition library for PureScript.
+
+    ## Core Type
+
+    ```purescript
+    Workflow i o a b
+    --        | | | +-- b: output value (workflow ends with)
+    --        | | +---- a: input value (workflow starts with)
+    --        | +------ o: output messages (requests workflow SENDS) - row type
+    --        +-------- i: input messages (responses workflow RECEIVES) - row type
+    ```
+
+    ## Key Features
+
+    - **Inspectable**: Workflows are data, enabling diagram generation
+    - **Composable**: Category, Profunctor, Strong, Choice instances
+    - **Platform-agnostic**: No Effect/Aff imports; interpretation at edges
+    - **Type-safe**: Row polymorphism for effect composition
+
+    ## No FFI Policy
+
+    This library is pure PureScript. No `.js` or `.erl` files are allowed in `src/`.
+    Platform-specific interpreters belong in consumer projects.
+
+  footer: |
+    This file is generated, do not edit it directly. Edit either the project specific information in [agents.yaml](./agents.yaml) or the [company guidance](https://github.com/Cambridge-Vision-Technology/agen/wiki) and then rerun `agen`
+    To install the agen tool `nix profile add github:Cambridge-Vision-Technology/agen`

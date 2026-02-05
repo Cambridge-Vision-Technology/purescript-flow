@@ -1,0 +1,32 @@
+# purescript-whine configuration
+# See: https://github.com/Cambridge-Vision-Technology/purescript-whine
+
+rulePackages:
+  - whine-core
+
+include:
+  - src/**/*.purs
+
+rules:
+  # Import standards
+  QualifiedImportsOnly: {}
+  MatchingAliases: {}
+  NoDuplicateImports: {}
+
+  # ADT enforcement - detects record.field == "string" patterns
+  NoStringComparison: {}
+
+  # Function complexity - reasonable defaults for a library
+  FunctionComplexity:
+    maxLines: 100
+    maxNestingDepth: 10
+    maxCyclomaticComplexity: 20
+
+  # Unsafe functions - never use
+  UndesirableUnsafe:
+    functions:
+      "Partial.Unsafe.unsafePartial": "Use Either/Maybe types for error handling instead"
+      "Unsafe.Coerce.unsafeCoerce": "Model types properly instead"
+      "Effect.Unsafe.unsafePerformEffect": "Return Effect type instead"
+      "Aff.Unsafe.unsafePerformAff": "Return Aff type instead"
+      "Partial.crashWith": "Use Either/Maybe types instead"
