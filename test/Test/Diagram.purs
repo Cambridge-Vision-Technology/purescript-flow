@@ -82,9 +82,33 @@ spec = Test.BDD.feature "Diagram generation" do
     Test.Spec.it "contains flowchart TD" do
       let output = testRequestWorkflow
       output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "flowchart TD"
-    Test.Spec.it "contains effect node" do
+    Test.Spec.it "contains labeled effect node" do
       let output = testRequestWorkflow
-      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "{{Effect}}"
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "{{Fetch Data}}"
+
+  Test.BDD.scenario "mapArray workflow" do
+    Test.Spec.it "contains For Each subgraph" do
+      let output = testMapArrayWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "For Each"
+    Test.Spec.it "contains subgraph" do
+      let output = testMapArrayWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "subgraph"
+    Test.Spec.it "contains inner step name" do
+      let output = testMapArrayWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Process Item"
+
+  Test.BDD.scenario "single-branch parallel" do
+    Test.Spec.it "does not contain fork/join for first" do
+      let output = testSingleBranchParFirst
+      output `Test.Spec.Assertions.shouldSatisfy` (not <<< Test.Util.containsPattern "fork")
+    Test.Spec.it "renders the non-pure branch inline" do
+      let output = testSingleBranchParFirst
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Double"
+
+  Test.BDD.scenario "pure nodes skipped in sequences" do
+    Test.Spec.it "does not render pure placeholder in step-pure-step seq" do
+      let output = testPureSkippedInSeq
+      (Test.Util.countOccurrences "..." output) `Test.Spec.Assertions.shouldEqual` 0
 
 testSequentialWorkflow :: String
 testSequentialWorkflow =
@@ -135,8 +159,44 @@ testRequestWorkflow :: String
 testRequestWorkflow =
   let
     workflow :: Flow.Types.Workflow () (TEST ()) String String
-    workflow = Flow.Types.mkRequest
+    workflow = Flow.Types.mkRequest "Fetch Data"
       (\input -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "test") (TestOp input identity))
       (\response -> Flow.Types.Pure identity)
+  in
+    Flow.Interpret.Diagram.toMermaid workflow
+
+testMapArrayWorkflow :: String
+testMapArrayWorkflow =
+  let
+    innerW :: Flow.Types.Workflow () () Int Int
+    innerW = Flow.Types.Step "Process Item" (Flow.Types.Pure (_ * 2))
+
+    workflow :: Flow.Types.Workflow () () (Array Int) (Array Int)
+    workflow = Flow.Types.mkMapArray innerW
+  in
+    Flow.Interpret.Diagram.toMermaid workflow
+
+testSingleBranchParFirst :: String
+testSingleBranchParFirst =
+  let
+    doubleW :: Flow.Types.Workflow () () Int Int
+    doubleW = Flow.Types.Step "Double" (Flow.Types.Pure (_ * 2))
+
+    workflow :: Flow.Types.Workflow () () (Data.Tuple.Tuple Int String) (Data.Tuple.Tuple Int String)
+    workflow = Data.Profunctor.Strong.first doubleW
+  in
+    Flow.Interpret.Diagram.toMermaid workflow
+
+testPureSkippedInSeq :: String
+testPureSkippedInSeq =
+  let
+    doubleW :: Flow.Types.Workflow () () Int Int
+    doubleW = Flow.Types.Step "Double" (Flow.Types.Pure (_ * 2))
+
+    addTenW :: Flow.Types.Workflow () () Int Int
+    addTenW = Flow.Types.Step "Add Ten" (Flow.Types.Pure (_ + 10))
+
+    workflow :: Flow.Types.Workflow () () Int Int
+    workflow = doubleW Control.Category.>>> addTenW
   in
     Flow.Interpret.Diagram.toMermaid workflow

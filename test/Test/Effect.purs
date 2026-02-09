@@ -216,7 +216,7 @@ spec = Test.BDD.feature "Effect interpreter" do
     Test.Spec.it "executes with handler using Identity monad" do
       let
         workflow :: Flow.Types.Workflow () (COUNTER ()) Unit Int
-        workflow = Flow.Types.mkRequest
+        workflow = Flow.Types.mkRequest "Get Count"
           (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (GetCount identity))
           (\count -> Flow.Types.Pure (\_ -> count))
 
@@ -233,12 +233,12 @@ spec = Test.BDD.feature "Effect interpreter" do
     Test.Spec.it "handles sequential requests" do
       let
         getW :: Flow.Types.Workflow () (COUNTER ()) Unit Int
-        getW = Flow.Types.mkRequest
+        getW = Flow.Types.mkRequest "Get Count"
           (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (GetCount identity))
           (\count -> Flow.Types.Pure (\_ -> count))
 
         incW :: Flow.Types.Workflow () (COUNTER ()) Unit Int
-        incW = Flow.Types.mkRequest
+        incW = Flow.Types.mkRequest "Increment"
           (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (Increment identity))
           (\delta -> Flow.Types.Pure (\_ -> delta))
 
@@ -264,3 +264,39 @@ spec = Test.BDD.feature "Effect interpreter" do
         handler = Data.Functor.Variant.case_
         Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow 5
       result `Test.Spec.Assertions.shouldEqual` 10
+
+  Test.BDD.scenario "mapArray workflows" do
+    Test.Spec.it "applies inner workflow to each element" do
+      let
+        innerW :: Flow.Types.Workflow () () Int Int
+        innerW = Flow.Types.Pure (_ * 2)
+
+        workflow :: Flow.Types.Workflow () () (Array Int) (Array Int)
+        workflow = Flow.Types.mkMapArray innerW
+
+        result = Test.Util.runPure workflow [ 1, 2, 3 ]
+      result `Test.Spec.Assertions.shouldEqual` [ 2, 4, 6 ]
+
+    Test.Spec.it "handles empty array" do
+      let
+        innerW :: Flow.Types.Workflow () () Int Int
+        innerW = Flow.Types.Pure (_ * 2)
+
+        workflow :: Flow.Types.Workflow () () (Array Int) (Array Int)
+        workflow = Flow.Types.mkMapArray innerW
+
+        result = Test.Util.runPure workflow []
+      result `Test.Spec.Assertions.shouldEqual` []
+
+    Test.Spec.it "works with sequential inner workflow" do
+      let
+        innerW :: Flow.Types.Workflow () () Int Int
+        innerW =
+          Flow.Types.Pure (_ * 2)
+            Control.Category.>>> Flow.Types.Pure (_ + 1)
+
+        workflow :: Flow.Types.Workflow () () (Array Int) (Array Int)
+        workflow = Flow.Types.mkMapArray innerW
+
+        result = Test.Util.runPure workflow [ 5, 10 ]
+      result `Test.Spec.Assertions.shouldEqual` [ 11, 21 ]

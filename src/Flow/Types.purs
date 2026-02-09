@@ -4,12 +4,14 @@ module Flow.Types
   , ParCPS(..)
   , ChoiceCPS(..)
   , RequestCPS(..)
+  , MapArrayCPS(..)
   , TimeoutCPS(..)
   , RetryCPS(..)
   , mkSeq
   , mkPar
   , mkChoice
   , mkRequest
+  , mkMapArray
   , mkTimeout
   , mkRetry
   , Milliseconds(..)
@@ -91,7 +93,8 @@ data Workflow (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b
   | Seq (Data.Exists.Exists (SeqF i o a b))
   | Par (ParCPS i o a b)
   | Choice (ChoiceCPS i o a b)
-  | Request (RequestCPS i o a b)
+  | Request String (RequestCPS i o a b)
+  | MapArray (MapArrayCPS i o a b)
   | Timeout (TimeoutCPS i o a b)
   | Retry (RetryCPS i o a b)
 
@@ -157,10 +160,28 @@ newtype RequestCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = Req
 
 mkRequest
   :: forall i o a b x
-   . (a -> Data.Functor.Variant.VariantF o x)
+   . String
+  -> (a -> Data.Functor.Variant.VariantF o x)
   -> (x -> Workflow i o x b)
   -> Workflow i o a b
-mkRequest toRequest fromResponse = Request (RequestCPS (\k -> k toRequest fromResponse))
+mkRequest label toRequest fromResponse = Request label (RequestCPS (\k -> k toRequest fromResponse))
+
+newtype MapArrayCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = MapArrayCPS
+  ( forall r
+     . ( forall x y
+          . Workflow i o x y
+         -> (a -> Array x)
+         -> (Array y -> b)
+         -> r
+       )
+    -> r
+  )
+
+mkMapArray
+  :: forall i o x y
+   . Workflow i o x y
+  -> Workflow i o (Array x) (Array y)
+mkMapArray inner = MapArray (MapArrayCPS (\k -> k inner identity identity))
 
 newtype TimeoutCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = TimeoutCPS
   ( forall r

@@ -89,6 +89,7 @@
             "effect"
             "either"
             "exists"
+            "foldable-traversable"
             "integers"
             "maybe"
             "newtype"

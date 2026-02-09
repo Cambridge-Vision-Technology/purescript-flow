@@ -42,8 +42,15 @@ addEdge fromId toId = addLine (fromId <> " --> " <> toId)
 addLabeledEdge :: String -> String -> String -> DiagramState -> DiagramState
 addLabeledEdge fromId toId label = addLine (fromId <> " -->|" <> escapeLabel label <> "| " <> toId)
 
+addEffectNode :: String -> String -> DiagramState -> DiagramState
+addEffectNode nodeId label = addLine (nodeId <> "{{" <> escapeLabel label <> "}}")
+
 escapeLabel :: String -> String
 escapeLabel s = Data.String.replaceAll (Data.String.Pattern "\"") (Data.String.Replacement "'") s
+
+isPure :: forall i o a b. Flow.Types.Workflow i o a b -> Boolean
+isPure (Flow.Types.Pure _) = true
+isPure _ = false
 
 toMermaid :: forall i o a b. Flow.Types.Workflow i o a b -> String
 toMermaid workflow =
@@ -63,22 +70,26 @@ toMermaid workflow =
     header <> "\n    " <> body
 
 processWorkflow :: forall i o a b. Flow.Types.Workflow i o a b -> DiagramState -> NodeResult
--- NOTE: Pure nodes are pass-through; create invisible node for connectivity
 processWorkflow (Flow.Types.Pure _) st =
   let
     Data.Tuple.Tuple nodeId st' = freshId st
-    st'' = addNode nodeId "..." st'
   in
-    { entryId: nodeId, exitId: nodeId, state: st'' }
+    { entryId: nodeId, exitId: nodeId, state: st' }
 
 processWorkflow (Flow.Types.Step name inner) st =
   let
     Data.Tuple.Tuple nodeId st' = freshId st
     st'' = addNode nodeId name st'
-    innerResult = processWorkflow inner st''
-    st''' = addEdge nodeId innerResult.entryId innerResult.state
   in
-    { entryId: nodeId, exitId: innerResult.exitId, state: st''' }
+    case isPure inner of
+      true ->
+        { entryId: nodeId, exitId: nodeId, state: st'' }
+      false ->
+        let
+          innerResult = processWorkflow inner st''
+          st''' = addEdge nodeId innerResult.entryId innerResult.state
+        in
+          { entryId: nodeId, exitId: innerResult.exitId, state: st''' }
 
 processWorkflow (Flow.Types.Seq exists) st =
   Data.Exists.runExists (processSeq st) exists
@@ -89,8 +100,11 @@ processWorkflow (Flow.Types.Par parCps) st =
 processWorkflow (Flow.Types.Choice choiceCps) st =
   processChoiceCPS choiceCps st
 
-processWorkflow (Flow.Types.Request requestCps) st =
-  processRequestCPS requestCps st
+processWorkflow (Flow.Types.Request label requestCps) st =
+  processRequestCPS label requestCps st
+
+processWorkflow (Flow.Types.MapArray mapArrayCps) st =
+  processMapArrayCPS mapArrayCps st
 
 processWorkflow (Flow.Types.Timeout timeoutCps) st =
   processTimeoutCPS timeoutCps st
@@ -100,16 +114,39 @@ processWorkflow (Flow.Types.Retry retryCps) st =
 
 processSeq :: forall i o a b x. DiagramState -> Flow.Types.SeqF i o a b x -> NodeResult
 processSeq st (Flow.Types.SeqF w1 w2) =
-  let
-    result1 = processWorkflow w1 st
-    result2 = processWorkflow w2 result1.state
-    st' = addEdge result1.exitId result2.entryId result2.state
-  in
-    { entryId: result1.entryId, exitId: result2.exitId, state: st' }
+  case isPure w1, isPure w2 of
+    true, true ->
+      let
+        Data.Tuple.Tuple nodeId st' = freshId st
+      in
+        { entryId: nodeId, exitId: nodeId, state: st' }
+    true, false ->
+      processWorkflow w2 st
+    false, true ->
+      processWorkflow w1 st
+    false, false ->
+      let
+        result1 = processWorkflow w1 st
+        result2 = processWorkflow w2 result1.state
+        st' = addEdge result1.exitId result2.entryId result2.state
+      in
+        { entryId: result1.entryId, exitId: result2.exitId, state: st' }
 
 processParCPS :: forall i o a b. Flow.Types.ParCPS i o a b -> DiagramState -> NodeResult
 processParCPS (Flow.Types.ParCPS k) st =
-  k \_ _ _ w1 w2 -> processParWorkflows w1 w2 st
+  k \_ _ _ w1 w2 ->
+    case isPure w1, isPure w2 of
+      true, true ->
+        let
+          Data.Tuple.Tuple nodeId st' = freshId st
+        in
+          { entryId: nodeId, exitId: nodeId, state: st' }
+      true, false ->
+        processWorkflow w2 st
+      false, true ->
+        processWorkflow w1 st
+      false, false ->
+        processParWorkflows w1 w2 st
 
 processParWorkflows
   :: forall i o a1 b1 a2 b2
@@ -169,19 +206,24 @@ processChoiceWorkflows leftW rightW st =
   in
     { entryId: decisionId, exitId: mergeId, state: st7 }
 
--- NOTE: Request nodes are shown as hexagon "Effect" nodes. The continuation
--- workflow cannot be statically analyzed because it depends on the runtime
--- response value. We only show where the effect happens, not what follows.
-processRequestCPS :: forall i o a b. Flow.Types.RequestCPS i o a b -> DiagramState -> NodeResult
-processRequestCPS (Flow.Types.RequestCPS _) st =
+processRequestCPS :: forall i o a b. String -> Flow.Types.RequestCPS i o a b -> DiagramState -> NodeResult
+processRequestCPS label (Flow.Types.RequestCPS _) st =
   let
     Data.Tuple.Tuple effectId st' = freshId st
-    st1 = addEffectNode effectId "Effect" st'
+    st1 = addEffectNode effectId label st'
   in
     { entryId: effectId, exitId: effectId, state: st1 }
 
-addEffectNode :: String -> String -> DiagramState -> DiagramState
-addEffectNode nodeId label = addLine (nodeId <> "{{" <> escapeLabel label <> "}}")
+processMapArrayCPS :: forall i o a b. Flow.Types.MapArrayCPS i o a b -> DiagramState -> NodeResult
+processMapArrayCPS (Flow.Types.MapArrayCPS k) st =
+  k \inner _ _ ->
+    let
+      Data.Tuple.Tuple subgraphId st' = freshId st
+      st1 = addLine ("subgraph foreach_" <> subgraphId <> " [For Each]") st'
+      innerResult = processWorkflow inner st1
+      st2 = addLine "end" innerResult.state
+    in
+      { entryId: innerResult.entryId, exitId: innerResult.exitId, state: st2 }
 
 processTimeoutCPS :: forall i o a b. Flow.Types.TimeoutCPS i o a b -> DiagramState -> NodeResult
 processTimeoutCPS (Flow.Types.TimeoutCPS k) st =

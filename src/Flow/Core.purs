@@ -9,6 +9,7 @@ module Flow.Core
   , fanin
   , (|||)
   , request
+  , mapArray
   , timeout
   , retry
   , defaultRetryPolicy
@@ -52,10 +53,17 @@ fanin left right = Flow.Types.mkChoice identity left right
 
 request
   :: forall i o a b x
-   . (a -> Data.Functor.Variant.VariantF o x)
+   . String
+  -> (a -> Data.Functor.Variant.VariantF o x)
   -> (x -> Flow.Types.Workflow i o x b)
   -> Flow.Types.Workflow i o a b
 request = Flow.Types.mkRequest
+
+mapArray
+  :: forall i o x y
+   . Flow.Types.Workflow i o x y
+  -> Flow.Types.Workflow i o (Array x) (Array y)
+mapArray = Flow.Types.mkMapArray
 
 timeout
   :: forall i o a b
