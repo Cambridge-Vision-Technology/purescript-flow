@@ -10,6 +10,7 @@ import Data.Either as Data.Either
 import Data.Exists as Data.Exists
 import Data.Functor.Variant as Data.Functor.Variant
 import Data.Int as Data.Int
+import Data.Traversable as Data.Traversable
 import Data.Tuple as Data.Tuple
 import Flow.Class.Schedule as Flow.Class.Schedule
 import Flow.Types as Flow.Types
@@ -37,8 +38,11 @@ runWorkflowM handler (Flow.Types.Par parCps) a =
 runWorkflowM handler (Flow.Types.Choice choiceCps) a =
   runChoiceCPSM handler choiceCps a
 
-runWorkflowM handler (Flow.Types.Request requestCps) a =
+runWorkflowM handler (Flow.Types.Request _ requestCps) a =
   runRequestCPS handler requestCps a
+
+runWorkflowM handler (Flow.Types.MapArray mapArrayCps) a =
+  runMapArrayCPSM handler mapArrayCps a
 
 runWorkflowM handler (Flow.Types.Timeout timeoutCps) a =
   runTimeoutCPSM handler timeoutCps a
@@ -102,6 +106,20 @@ runRequestCPS handler (Flow.Types.RequestCPS k) a =
     let request = toRequest a
     response <- handler request
     runWorkflowM handler (fromResponse response) response
+
+runMapArrayCPSM
+  :: forall m i o a b
+   . Monad m
+  => Flow.Class.Schedule.MonadSchedule m
+  => EffectHandler m o
+  -> Flow.Types.MapArrayCPS i o a b
+  -> a
+  -> m b
+runMapArrayCPSM handler (Flow.Types.MapArrayCPS k) a =
+  k \inner split combine -> do
+    let elements = split a
+    results <- Data.Traversable.traverse (\x -> runWorkflowM handler inner x) elements
+    pure (combine results)
 
 runTimeoutCPSM
   :: forall m i o a b
