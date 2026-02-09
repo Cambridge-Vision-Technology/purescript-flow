@@ -84,37 +84,35 @@
 
           purs-nix-lib = purs-nix { inherit system; };
 
-          # PureScript project configuration - library only
+          baseDeps = [
+            "arrays"
+            "effect"
+            "either"
+            "exists"
+            "integers"
+            "maybe"
+            "newtype"
+            "prelude"
+            "profunctor"
+            "strings"
+            "tuples"
+            "variant"
+          ];
+
           ps = purs-nix-lib.purs {
-            dependencies = [
-              "prelude"
-              "effect"
-              "either"
-              "maybe"
-              "tuples"
-              "variant"
-              "profunctor"
-              "arrays"
-              "strings"
-            ];
+            dependencies = baseDeps;
             srcs = [ ./src ];
             compile = {
               compilerOptions = [ "--json-errors" ];
             };
           };
 
-          # PureScript project configuration - with tests
           psWithTests = purs-nix-lib.purs {
-            dependencies = [
-              "prelude"
-              "effect"
-              "either"
-              "maybe"
-              "tuples"
-              "variant"
-              "profunctor"
-              "arrays"
-              "strings"
+            dependencies = baseDeps ++ [
+              "aff"
+              "identity"
+              "spec"
+              "spec-node"
             ];
             srcs = [
               ./src
@@ -125,19 +123,10 @@
             };
           };
 
-          # PureScript project configuration - demo app
           psDemo = purs-nix-lib.purs {
-            dependencies = [
-              "prelude"
-              "effect"
+            dependencies = baseDeps ++ [
               "console"
-              "either"
-              "maybe"
-              "tuples"
-              "variant"
-              "profunctor"
-              "arrays"
-              "strings"
+              "identity"
             ];
             srcs = [
               ./src
@@ -319,6 +308,15 @@
             module = "Demo.Main";
           };
 
+          # Test bundle - bundled Node.js test runner
+          testBundle = psWithTests.bundle {
+            esbuild = {
+              outfile = "test.js";
+              platform = "node";
+            };
+            module = "Test.Main";
+          };
+
           # purs-tidy wrapper for treefmt
           pursTidyWrapper = pkgs.writeShellScriptBin "purs-tidy-treefmt" ''
             exec ${pkgs.purs-tidy}/bin/purs-tidy format-in-place "$@"
@@ -352,6 +350,17 @@
 
             # Tests compile check
             tests-compile = testsCompiled;
+
+            # Tests run check
+            test-playback =
+              pkgs.runCommand "purescript-flow-test-playback"
+                {
+                  nativeBuildInputs = [ pkgs.nodejs ];
+                }
+                ''
+                  ${pkgs.nodejs}/bin/node ${testBundle}
+                  touch $out
+                '';
 
             # Linting
             inherit
@@ -449,6 +458,19 @@
               type = "app";
               program = "${inputs'.purescript-drop.packages.default}/bin/drop";
               meta.description = "Find Pursuit library functions that could replace local code";
+            };
+
+            # Test runner
+            test-playback = {
+              type = "app";
+              program = toString (
+                pkgs.writeShellScript "purescript-flow-test-playback" ''
+                  #!/usr/bin/env bash
+                  set -euo pipefail
+                  exec ${pkgs.nodejs}/bin/node ${testBundle}
+                ''
+              );
+              meta.description = "Run playback tests";
             };
 
             # Demo application

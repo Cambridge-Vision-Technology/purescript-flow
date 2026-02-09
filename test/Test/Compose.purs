@@ -9,94 +9,121 @@ import Data.Profunctor.Choice as Data.Profunctor.Choice
 import Data.Profunctor.Strong as Data.Profunctor.Strong
 import Data.Tuple as Data.Tuple
 import Flow.Types as Flow.Types
+import Test.BDD as Test.BDD
+import Test.Util as Test.Util
+import Test.Spec as Test.Spec
+import Test.Spec.Assertions as Test.Spec.Assertions
 
--- | Test workflows for verification
--- | These tests verify that composition primitives compile with correct types
--- | and produce the expected Workflow structure.
-
--- | A simple workflow that doubles an integer
 doubleW :: forall i o. Flow.Types.Workflow i o Int Int
 doubleW = Flow.Types.Pure (_ * 2)
 
--- | A simple workflow that adds 10
 addTenW :: forall i o. Flow.Types.Workflow i o Int Int
 addTenW = Flow.Types.Pure (_ + 10)
 
--- | A workflow that converts Int to String
 showW :: forall i o. Flow.Types.Workflow i o Int String
 showW = Flow.Types.Pure show
 
--- | Test: identity >>> w == w (structurally produces Seq)
--- | Since Workflow is data, we verify the types match and composition works.
 testLeftIdentity :: forall i o. Flow.Types.Workflow i o Int Int
 testLeftIdentity = Control.Category.identity Control.Category.>>> doubleW
 
--- | Test: w >>> identity == w (structurally produces Seq)
 testRightIdentity :: forall i o. Flow.Types.Workflow i o Int Int
 testRightIdentity = doubleW Control.Category.>>> Control.Category.identity
 
--- | Test: associativity - both produce valid workflows with same type
-testAssociativityLeft :: forall i o. Flow.Types.Workflow i o Int String
-testAssociativityLeft = (doubleW Control.Category.>>> addTenW) Control.Category.>>> showW
+testAssocLeft :: forall i o. Flow.Types.Workflow i o Int String
+testAssocLeft = (doubleW Control.Category.>>> addTenW) Control.Category.>>> showW
 
-testAssociativityRight :: forall i o. Flow.Types.Workflow i o Int String
-testAssociativityRight = doubleW Control.Category.>>> (addTenW Control.Category.>>> showW)
+testAssocRight :: forall i o. Flow.Types.Workflow i o Int String
+testAssocRight = doubleW Control.Category.>>> (addTenW Control.Category.>>> showW)
 
--- | Test: Profunctor dimap
 testDimap :: forall i o. Flow.Types.Workflow i o String String
-testDimap = Data.Profunctor.dimap stringToInt intToString doubleW
-  where
-  stringToInt :: String -> Int
-  stringToInt _ = 0
+testDimap = Data.Profunctor.dimap (\_ -> 0) show doubleW
 
-  intToString :: Int -> String
-  intToString = show
-
--- | Test: Strong first - runs workflow on first element of tuple
 testFirst :: forall i o. Flow.Types.Workflow i o (Data.Tuple.Tuple Int String) (Data.Tuple.Tuple Int String)
 testFirst = Data.Profunctor.Strong.first doubleW
 
--- | Test: Strong second - runs workflow on second element of tuple
 testSecond :: forall i o. Flow.Types.Workflow i o (Data.Tuple.Tuple String Int) (Data.Tuple.Tuple String Int)
 testSecond = Data.Profunctor.Strong.second doubleW
 
--- | Test: Choice left - runs workflow on Left values
-testLeft :: forall i o. Flow.Types.Workflow i o (Data.Either.Either Int String) (Data.Either.Either Int String)
-testLeft = Data.Profunctor.Choice.left doubleW
+testChoiceLeft :: forall i o. Flow.Types.Workflow i o (Data.Either.Either Int String) (Data.Either.Either Int String)
+testChoiceLeft = Data.Profunctor.Choice.left doubleW
 
--- | Test: Choice right - runs workflow on Right values
-testRight :: forall i o. Flow.Types.Workflow i o (Data.Either.Either String Int) (Data.Either.Either String Int)
-testRight = Data.Profunctor.Choice.right doubleW
+testChoiceRight :: forall i o. Flow.Types.Workflow i o (Data.Either.Either String Int) (Data.Either.Either String Int)
+testChoiceRight = Data.Profunctor.Choice.right doubleW
 
--- | Test: Composition of Strong workflows (parallel composition via ***)
-testParallelComposition
-  :: forall i o
-   . Flow.Types.Workflow i o (Data.Tuple.Tuple Int Int) (Data.Tuple.Tuple Int Int)
-testParallelComposition =
+testParallelComp :: forall i o. Flow.Types.Workflow i o (Data.Tuple.Tuple Int Int) (Data.Tuple.Tuple Int Int)
+testParallelComp =
   Data.Profunctor.Strong.first doubleW
     Control.Category.>>> Data.Profunctor.Strong.second addTenW
 
--- | Test: fanout (&&&) pattern - same input to two workflows, combine results
 testFanout :: forall i o. Flow.Types.Workflow i o Int (Data.Tuple.Tuple Int Int)
 testFanout =
   Data.Profunctor.dimap (\x -> Data.Tuple.Tuple x x) identity
     (Data.Profunctor.Strong.first doubleW Control.Category.>>> Data.Profunctor.Strong.second addTenW)
 
--- | Test: fanin (|||) pattern using Choice
-testFanin
-  :: forall i o
-   . Flow.Types.Workflow i o (Data.Either.Either Int Int) Int
+mergeEither :: Data.Either.Either Int Int -> Int
+mergeEither (Data.Either.Left n) = n
+mergeEither (Data.Either.Right n) = n
+
+testFanin :: forall i o. Flow.Types.Workflow i o (Data.Either.Either Int Int) Int
 testFanin =
   Data.Profunctor.Choice.left doubleW
     Control.Category.>>> Data.Profunctor.Choice.right addTenW
     Control.Category.>>> Flow.Types.Pure mergeEither
-  where
-  mergeEither :: Data.Either.Either Int Int -> Int
-  mergeEither (Data.Either.Left n) = n
-  mergeEither (Data.Either.Right n) = n
 
--- | Test: Named steps for diagram generation
 testNamedSteps :: forall i o. Flow.Types.Workflow i o Int Int
 testNamedSteps =
   Flow.Types.Step "Double" doubleW
     Control.Category.>>> Flow.Types.Step "Add Ten" addTenW
+
+spec :: Test.Spec.Spec Unit
+spec = Test.BDD.feature "Composition primitives" do
+  Test.BDD.scenario "category laws" do
+    Test.Spec.it "left identity" do
+      Test.Util.runPure testLeftIdentity 5 `Test.Spec.Assertions.shouldEqual` 10
+
+    Test.Spec.it "right identity" do
+      Test.Util.runPure testRightIdentity 5 `Test.Spec.Assertions.shouldEqual` 10
+
+    Test.Spec.it "associativity (left)" do
+      Test.Util.runPure testAssocLeft 5 `Test.Spec.Assertions.shouldEqual` "20"
+
+    Test.Spec.it "associativity (right)" do
+      Test.Util.runPure testAssocRight 5 `Test.Spec.Assertions.shouldEqual` "20"
+
+  Test.BDD.scenario "profunctor" do
+    Test.Spec.it "dimap" do
+      Test.Util.runPure testDimap "x" `Test.Spec.Assertions.shouldEqual` "0"
+
+  Test.BDD.scenario "strong" do
+    Test.Spec.it "first" do
+      Test.Util.runPure testFirst (Data.Tuple.Tuple 5 "hi") `Test.Spec.Assertions.shouldEqual` (Data.Tuple.Tuple 10 "hi")
+
+    Test.Spec.it "second" do
+      Test.Util.runPure testSecond (Data.Tuple.Tuple "hi" 5) `Test.Spec.Assertions.shouldEqual` (Data.Tuple.Tuple "hi" 10)
+
+  Test.BDD.scenario "choice" do
+    Test.Spec.it "left" do
+      Test.Util.runPure testChoiceLeft (Data.Either.Left 5) `Test.Spec.Assertions.shouldEqual` (Data.Either.Left 10)
+
+    Test.Spec.it "right" do
+      Test.Util.runPure testChoiceRight (Data.Either.Right 5) `Test.Spec.Assertions.shouldEqual` (Data.Either.Right 10)
+
+  Test.BDD.scenario "parallel composition" do
+    Test.Spec.it "first >>> second" do
+      Test.Util.runPure testParallelComp (Data.Tuple.Tuple 5 3) `Test.Spec.Assertions.shouldEqual` (Data.Tuple.Tuple 10 13)
+
+  Test.BDD.scenario "fanout pattern" do
+    Test.Spec.it "fanout" do
+      Test.Util.runPure testFanout 5 `Test.Spec.Assertions.shouldEqual` (Data.Tuple.Tuple 10 15)
+
+  Test.BDD.scenario "fanin pattern" do
+    Test.Spec.it "fanin Left" do
+      Test.Util.runPure testFanin (Data.Either.Left 5) `Test.Spec.Assertions.shouldEqual` 10
+
+    Test.Spec.it "fanin Right" do
+      Test.Util.runPure testFanin (Data.Either.Right 5)
+        `Test.Spec.Assertions.shouldEqual` 15
+
+  Test.BDD.scenario "named steps" do
+    Test.Spec.it "named steps" do
+      Test.Util.runPure testNamedSteps 5 `Test.Spec.Assertions.shouldEqual` 20

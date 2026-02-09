@@ -7,31 +7,85 @@ import Data.Either as Data.Either
 import Data.Functor.Variant as Data.Functor.Variant
 import Data.Profunctor.Choice as Data.Profunctor.Choice
 import Data.Profunctor.Strong as Data.Profunctor.Strong
-import Data.String as Data.String
 import Data.Tuple as Data.Tuple
 import Flow.Interpret.Diagram as Flow.Interpret.Diagram
 import Flow.Types as Flow.Types
+import Test.BDD as Test.BDD
+import Test.Spec as Test.Spec
+import Test.Spec.Assertions as Test.Spec.Assertions
+import Test.Util as Test.Util
 import Type.Proxy as Type.Proxy
 
--- | Test: Simple Pure workflow produces minimal Mermaid
-testPureWorkflow :: String
-testPureWorkflow =
-  let
-    workflow :: Flow.Types.Workflow () () Int Int
-    workflow = Flow.Types.Pure (_ * 2)
-  in
-    Flow.Interpret.Diagram.toMermaid workflow
+data TestF a = TestOp String (String -> a)
 
--- | Test: Single named step produces labeled node
-testSingleStep :: String
-testSingleStep =
-  let
-    workflow :: Flow.Types.Workflow () () Int Int
-    workflow = Flow.Types.Step "Double" (Flow.Types.Pure (_ * 2))
-  in
-    Flow.Interpret.Diagram.toMermaid workflow
+derive instance Functor TestF
 
--- | Test: Sequential workflow produces connected nodes
+type TEST r = (test :: TestF | r)
+
+spec :: Test.Spec.Spec Unit
+spec = Test.BDD.feature "Diagram generation" do
+  Test.BDD.scenario "sequential workflow" do
+    Test.Spec.it "contains flowchart TD" do
+      let output = testSequentialWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "flowchart TD"
+    Test.Spec.it "contains step Double" do
+      let output = testSequentialWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Double"
+    Test.Spec.it "contains step Add Ten" do
+      let output = testSequentialWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Add Ten"
+    Test.Spec.it "contains step Show" do
+      let output = testSequentialWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Show"
+    Test.Spec.it "contains arrow connector" do
+      let output = testSequentialWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "-->"
+
+  Test.BDD.scenario "parallel workflow" do
+    Test.Spec.it "contains subgraph" do
+      let output = testParallelWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "subgraph"
+    Test.Spec.it "contains step Double" do
+      let output = testParallelWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Double"
+    Test.Spec.it "contains step Negate" do
+      let output = testParallelWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Negate"
+    Test.Spec.it "contains fork" do
+      let output = testParallelWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "fork"
+    Test.Spec.it "contains join" do
+      let output = testParallelWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "join"
+
+  Test.BDD.scenario "choice workflow" do
+    Test.Spec.it "contains Decision diamond" do
+      let output = testChoiceWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "{Decision}"
+    Test.Spec.it "contains Handle Left" do
+      let output = testChoiceWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Handle Left"
+    Test.Spec.it "contains Handle Right" do
+      let output = testChoiceWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Handle Right"
+    Test.Spec.it "contains Left label" do
+      let output = testChoiceWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Left"
+    Test.Spec.it "contains Right label" do
+      let output = testChoiceWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "Right"
+    Test.Spec.it "contains merge" do
+      let output = testChoiceWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "merge"
+
+  Test.BDD.scenario "request workflow" do
+    Test.Spec.it "contains flowchart TD" do
+      let output = testRequestWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "flowchart TD"
+    Test.Spec.it "contains effect node" do
+      let output = testRequestWorkflow
+      output `Test.Spec.Assertions.shouldSatisfy` Test.Util.containsPattern "{{Effect}}"
+
 testSequentialWorkflow :: String
 testSequentialWorkflow =
   let
@@ -49,7 +103,6 @@ testSequentialWorkflow =
   in
     Flow.Interpret.Diagram.toMermaid workflow
 
--- | Test: Parallel workflow uses subgraph
 testParallelWorkflow :: String
 testParallelWorkflow =
   let
@@ -64,7 +117,6 @@ testParallelWorkflow =
   in
     Flow.Interpret.Diagram.toMermaid workflow
 
--- | Test: Choice workflow uses diamond decision node
 testChoiceWorkflow :: String
 testChoiceWorkflow =
   let
@@ -79,99 +131,6 @@ testChoiceWorkflow =
   in
     Flow.Interpret.Diagram.toMermaid workflow
 
--- | Test: Complex workflow combining sequential, parallel, and choice
-testComplexWorkflow :: String
-testComplexWorkflow =
-  let
-    readW :: Flow.Types.Workflow () () String String
-    readW = Flow.Types.Step "Read File" (Flow.Types.Pure identity)
-
-    parseW :: Flow.Types.Workflow () () String String
-    parseW = Flow.Types.Step "Parse" (Flow.Types.Pure identity)
-
-    validateW :: Flow.Types.Workflow () () String String
-    validateW = Flow.Types.Step "Validate" (Flow.Types.Pure identity)
-
-    transformW :: Flow.Types.Workflow () () String String
-    transformW = Flow.Types.Step "Transform" (Flow.Types.Pure identity)
-
-    parallelPart :: Flow.Types.Workflow () () (Data.Tuple.Tuple String String) (Data.Tuple.Tuple String String)
-    parallelPart = Flow.Types.mkPar validateW transformW
-
-    workflow :: Flow.Types.Workflow () () String String
-    workflow = readW Control.Category.>>> parseW
-  in
-    Flow.Interpret.Diagram.toMermaid workflow
-
--- | Verify sequential workflow contains expected elements
-verifySequentialContainsElements :: Boolean
-verifySequentialContainsElements =
-  let
-    output = testSequentialWorkflow
-  in
-    Data.String.contains (Data.String.Pattern "flowchart TD") output
-      && Data.String.contains (Data.String.Pattern "Double") output
-      && Data.String.contains (Data.String.Pattern "Add Ten") output
-      && Data.String.contains (Data.String.Pattern "Show") output
-      && Data.String.contains (Data.String.Pattern "-->") output
-
--- | Verify parallel workflow contains subgraph
-verifyParallelContainsSubgraph :: Boolean
-verifyParallelContainsSubgraph =
-  let
-    output = testParallelWorkflow
-  in
-    Data.String.contains (Data.String.Pattern "subgraph") output
-      && Data.String.contains (Data.String.Pattern "Double") output
-      && Data.String.contains (Data.String.Pattern "Negate") output
-      && Data.String.contains (Data.String.Pattern "fork") output
-      && Data.String.contains (Data.String.Pattern "join") output
-
--- | Verify choice workflow contains diamond node
-verifyChoiceContainsDiamond :: Boolean
-verifyChoiceContainsDiamond =
-  let
-    output = testChoiceWorkflow
-  in
-    Data.String.contains (Data.String.Pattern "{Decision}") output
-      && Data.String.contains (Data.String.Pattern "Handle Left") output
-      && Data.String.contains (Data.String.Pattern "Handle Right") output
-      && Data.String.contains (Data.String.Pattern "Left") output
-      && Data.String.contains (Data.String.Pattern "Right") output
-      && Data.String.contains (Data.String.Pattern "merge") output
-
--- | Using Strong instance for parallel (first/second)
-testStrongFirst :: String
-testStrongFirst =
-  let
-    doubleW :: Flow.Types.Workflow () () Int Int
-    doubleW = Flow.Types.Step "Double" (Flow.Types.Pure (_ * 2))
-
-    workflow :: Flow.Types.Workflow () () (Data.Tuple.Tuple Int String) (Data.Tuple.Tuple Int String)
-    workflow = Data.Profunctor.Strong.first doubleW
-  in
-    Flow.Interpret.Diagram.toMermaid workflow
-
--- | Using Choice instance for branching (left/right)
-testChoiceLeft :: String
-testChoiceLeft =
-  let
-    doubleW :: Flow.Types.Workflow () () Int Int
-    doubleW = Flow.Types.Step "Double" (Flow.Types.Pure (_ * 2))
-
-    workflow :: Flow.Types.Workflow () () (Data.Either.Either Int String) (Data.Either.Either Int String)
-    workflow = Data.Profunctor.Choice.left doubleW
-  in
-    Flow.Interpret.Diagram.toMermaid workflow
-
--- | Effect functor for testing
-data TestF a = TestOp String (String -> a)
-
-derive instance Functor TestF
-
-type TEST r = (test :: TestF | r)
-
--- | Test: Request workflow produces hexagon effect node
 testRequestWorkflow :: String
 testRequestWorkflow =
   let
@@ -181,12 +140,3 @@ testRequestWorkflow =
       (\response -> Flow.Types.Pure identity)
   in
     Flow.Interpret.Diagram.toMermaid workflow
-
--- | Verify request workflow contains effect node
-verifyRequestContainsEffectNode :: Boolean
-verifyRequestContainsEffectNode =
-  let
-    output = testRequestWorkflow
-  in
-    Data.String.contains (Data.String.Pattern "flowchart TD") output
-      && Data.String.contains (Data.String.Pattern "{{Effect}}") output

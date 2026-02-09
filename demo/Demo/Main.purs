@@ -9,33 +9,30 @@ import Effect.Console as Effect.Console
 import Flow as Flow
 import Flow.Core as Flow.Core
 import Flow.Interpret.Diagram as Flow.Interpret.Diagram
+import Data.Functor.Variant as Data.Functor.Variant
+import Data.Identity as Data.Identity
 import Flow.Interpret.Effect as Flow.Interpret.Effect
 import Flow.Types as Flow.Types
 
--- | Document data structure (simulating parsed file content)
 type Document =
   { content :: String
   , wordCount :: Int
   }
 
--- | Result of validation
 type ValidationResult =
   { isValid :: Boolean
   , errors :: Array String
   }
 
--- | Result of transformation
 type TransformResult =
   { transformed :: String
   , metadata :: String
   }
 
--- | Final processing result
 data ProcessingResult
   = Success { output :: String }
   | Failure { reason :: String }
 
--- | Parse raw input into a Document
 parseContent :: String -> Document
 parseContent input =
   { content: input
@@ -45,7 +42,6 @@ parseContent input =
   countWords :: String -> Int
   countWords s = 10
 
--- | Validate the document
 validateDocument :: Document -> ValidationResult
 validateDocument doc =
   if doc.wordCount > 0 then
@@ -53,14 +49,12 @@ validateDocument doc =
   else
     { isValid: false, errors: [ "Document is empty" ] }
 
--- | Transform the document
 transformDocument :: Document -> TransformResult
 transformDocument doc =
   { transformed: "PROCESSED: " <> doc.content
   , metadata: "words=" <> show doc.wordCount
   }
 
--- | Decide the output path based on validation
 decideOutput
   :: Data.Tuple.Tuple ValidationResult TransformResult
   -> Data.Either.Either String TransformResult
@@ -70,26 +64,15 @@ decideOutput (Data.Tuple.Tuple validation transform) =
   else
     Data.Either.Left (show validation.errors)
 
--- | Format successful output
 formatSuccess :: TransformResult -> ProcessingResult
 formatSuccess result = Success { output: result.transformed <> " [" <> result.metadata <> "]" }
 
--- | Format error output
 formatError :: String -> ProcessingResult
 formatError errors = Failure { reason: "Validation failed: " <> errors }
 
--- | Duplicate input for parallel processing
 duplicate :: forall a. a -> Data.Tuple.Tuple a a
 duplicate x = Data.Tuple.Tuple x x
 
--- | The main processing workflow demonstrating all composition patterns.
--- |
--- | Workflow structure:
--- | 1. Parse input (pure transformation)
--- | 2. Duplicate the document for parallel processing
--- | 3. In parallel: validate AND transform
--- | 4. Decide based on validation result
--- | 5. If valid: format success output, else: format error
 demoWorkflow :: forall i o. Flow.Types.Workflow i o String ProcessingResult
 demoWorkflow =
   Flow.Core.step "Parse Input" (Flow.Core.pure' parseContent)
@@ -104,18 +87,73 @@ demoWorkflow =
           Flow.Core.||| Flow.Core.step "Format Success" (Flow.Core.pure' formatSuccess)
       )
 
--- | Render the processing result for display
 showResult :: ProcessingResult -> String
 showResult (Success r) = "Success: " <> r.output
 showResult (Failure r) = "Failure: " <> r.reason
 
+alwaysFail :: String -> Data.Either.Either String String
+alwaysFail _ = Data.Either.Left "transient error"
+
+timeoutWorkflow
+  :: forall i o
+   . Flow.Types.Workflow i o String (Data.Either.Either Flow.Types.TimeoutError String)
+timeoutWorkflow =
+  Flow.Core.timeout (Flow.Types.Milliseconds 5000)
+    (Flow.Core.step "Slow Operation" (Flow.Core.pure' identity))
+
+retryWorkflow
+  :: forall i o. Flow.Types.Workflow i o String (Flow.Types.RetryResult String String)
+retryWorkflow =
+  Flow.Core.retry Flow.Core.defaultRetryPolicy
+    (Flow.Core.step "Unreliable Call" (Flow.Core.pure' alwaysFail))
+
+showTimeoutResult :: Data.Either.Either Flow.Types.TimeoutError String -> String
+showTimeoutResult (Data.Either.Left err) = "Timed out: " <> show err
+showTimeoutResult (Data.Either.Right value) = "Completed: " <> value
+
+showRetryResult :: Flow.Types.RetryResult String String -> String
+showRetryResult (Flow.Types.RetryResult r) = case r.result of
+  Data.Either.Left err ->
+    "Failed after " <> show r.attempts <> " attempts: " <> err
+  Data.Either.Right value ->
+    "Succeeded after " <> show r.attempts <> " attempts: " <> value
+
 main :: Effect.Effect Unit
 main = do
+  Effect.Console.log "=== Composition Demo ==="
+  Effect.Console.log ""
   Effect.Console.log "--- Workflow Diagram ---"
   Effect.Console.log (Flow.Interpret.Diagram.toMermaid demoWorkflow)
   Effect.Console.log ""
   Effect.Console.log "--- Execution Result ---"
   let input = "Hello world, this is a test document for workflow processing."
-  let result = Flow.Interpret.Effect.runWorkflow demoWorkflow input
+  let
+    handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity ()
+    handler = Data.Functor.Variant.case_
+    Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler demoWorkflow input
   Effect.Console.log ("Input: " <> input)
   Effect.Console.log ("Output: " <> showResult result)
+
+  Effect.Console.log ""
+  Effect.Console.log "=== Timeout Demo ==="
+  Effect.Console.log ""
+  Effect.Console.log "--- Workflow Diagram ---"
+  Effect.Console.log (Flow.Interpret.Diagram.toMermaid timeoutWorkflow)
+  Effect.Console.log ""
+  Effect.Console.log "--- Execution Result ---"
+  let
+    Data.Identity.Identity timeoutResult =
+      Flow.Interpret.Effect.runWorkflowM handler timeoutWorkflow "some input"
+  Effect.Console.log ("Output: " <> showTimeoutResult timeoutResult)
+
+  Effect.Console.log ""
+  Effect.Console.log "=== Retry Demo ==="
+  Effect.Console.log ""
+  Effect.Console.log "--- Workflow Diagram ---"
+  Effect.Console.log (Flow.Interpret.Diagram.toMermaid retryWorkflow)
+  Effect.Console.log ""
+  Effect.Console.log "--- Execution Result ---"
+  let
+    Data.Identity.Identity retryResult =
+      Flow.Interpret.Effect.runWorkflowM handler retryWorkflow "some input"
+  Effect.Console.log ("Output: " <> showRetryResult retryResult)

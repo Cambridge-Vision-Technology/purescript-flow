@@ -10,60 +10,41 @@ import Data.String as Data.String
 import Data.Tuple as Data.Tuple
 import Flow.Types as Flow.Types
 
--- | State for diagram generation
--- | Tracks the next available node ID and accumulated lines
 type DiagramState =
   { nextId :: Int
   , lines :: Array String
   }
 
--- | Result of processing a workflow node
--- | Contains the entry/exit node IDs and updated state
 type NodeResult =
   { entryId :: String
   , exitId :: String
   , state :: DiagramState
   }
 
--- | Generate a fresh node ID
 freshId :: DiagramState -> Data.Tuple.Tuple String DiagramState
 freshId st =
   Data.Tuple.Tuple
     ("N" <> show st.nextId)
     (st { nextId = st.nextId + 1 })
 
--- | Add a line to the diagram output
 addLine :: String -> DiagramState -> DiagramState
 addLine line st = st { lines = Data.Array.snoc st.lines line }
 
--- | Add a node definition
 addNode :: String -> String -> DiagramState -> DiagramState
 addNode nodeId label = addLine (nodeId <> "[" <> escapeLabel label <> "]")
 
--- | Add a diamond (decision) node
 addDiamond :: String -> String -> DiagramState -> DiagramState
 addDiamond nodeId label = addLine (nodeId <> "{" <> escapeLabel label <> "}")
 
--- | Add an edge between two nodes
 addEdge :: String -> String -> DiagramState -> DiagramState
 addEdge fromId toId = addLine (fromId <> " --> " <> toId)
 
--- | Add a labeled edge
 addLabeledEdge :: String -> String -> String -> DiagramState -> DiagramState
 addLabeledEdge fromId toId label = addLine (fromId <> " -->|" <> escapeLabel label <> "| " <> toId)
 
--- | Escape special characters in labels for Mermaid
 escapeLabel :: String -> String
 escapeLabel s = Data.String.replaceAll (Data.String.Pattern "\"") (Data.String.Replacement "'") s
 
--- | Convert a Workflow to a Mermaid flowchart string.
--- |
--- | The generated diagram shows:
--- | - Pure: skipped (invisible pass-through)
--- | - Step: labeled rectangular node
--- | - Seq: connected nodes with arrows
--- | - Par: subgraph containing parallel branches
--- | - Choice: diamond decision node with labeled branches
 toMermaid :: forall i o a b. Flow.Types.Workflow i o a b -> String
 toMermaid workflow =
   let
@@ -81,10 +62,9 @@ toMermaid workflow =
   in
     header <> "\n    " <> body
 
--- | Process a workflow and return its entry/exit points
 processWorkflow :: forall i o a b. Flow.Types.Workflow i o a b -> DiagramState -> NodeResult
+-- NOTE: Pure nodes are pass-through; create invisible node for connectivity
 processWorkflow (Flow.Types.Pure _) st =
-  -- NOTE: Pure nodes are pass-through; create invisible node for connectivity
   let
     Data.Tuple.Tuple nodeId st' = freshId st
     st'' = addNode nodeId "..." st'
@@ -112,7 +92,12 @@ processWorkflow (Flow.Types.Choice choiceCps) st =
 processWorkflow (Flow.Types.Request requestCps) st =
   processRequestCPS requestCps st
 
--- | Process sequential composition (unwrap existential)
+processWorkflow (Flow.Types.Timeout timeoutCps) st =
+  processTimeoutCPS timeoutCps st
+
+processWorkflow (Flow.Types.Retry retryCps) st =
+  processRetryCPS retryCps st
+
 processSeq :: forall i o a b x. DiagramState -> Flow.Types.SeqF i o a b x -> NodeResult
 processSeq st (Flow.Types.SeqF w1 w2) =
   let
@@ -122,12 +107,10 @@ processSeq st (Flow.Types.SeqF w1 w2) =
   in
     { entryId: result1.entryId, exitId: result2.exitId, state: st' }
 
--- | Process parallel composition (unwrap CPS)
 processParCPS :: forall i o a b. Flow.Types.ParCPS i o a b -> DiagramState -> NodeResult
 processParCPS (Flow.Types.ParCPS k) st =
   k \_ _ _ w1 w2 -> processParWorkflows w1 w2 st
 
--- | Process two parallel workflows
 processParWorkflows
   :: forall i o a1 b1 a2 b2
    . Flow.Types.Workflow i o a1 b1
@@ -157,12 +140,10 @@ processParWorkflows w1 w2 st =
   in
     { entryId: forkId, exitId: joinId, state: st10 }
 
--- | Process choice/branching (unwrap CPS)
 processChoiceCPS :: forall i o a b. Flow.Types.ChoiceCPS i o a b -> DiagramState -> NodeResult
 processChoiceCPS (Flow.Types.ChoiceCPS k) st =
   k \_ leftW rightW -> processChoiceWorkflows leftW rightW st
 
--- | Process choice between two workflows
 processChoiceWorkflows
   :: forall i o x y b
    . Flow.Types.Workflow i o x b
@@ -188,11 +169,9 @@ processChoiceWorkflows leftW rightW st =
   in
     { entryId: decisionId, exitId: mergeId, state: st7 }
 
--- | Process request effect (unwrap CPS)
--- |
--- | NOTE: Request nodes are shown as hexagon "Effect" nodes. The continuation
--- | workflow cannot be statically analyzed because it depends on the runtime
--- | response value. We only show where the effect happens, not what follows.
+-- NOTE: Request nodes are shown as hexagon "Effect" nodes. The continuation
+-- workflow cannot be statically analyzed because it depends on the runtime
+-- response value. We only show where the effect happens, not what follows.
 processRequestCPS :: forall i o a b. Flow.Types.RequestCPS i o a b -> DiagramState -> NodeResult
 processRequestCPS (Flow.Types.RequestCPS _) st =
   let
@@ -201,6 +180,29 @@ processRequestCPS (Flow.Types.RequestCPS _) st =
   in
     { entryId: effectId, exitId: effectId, state: st1 }
 
--- | Add an effect (hexagon) node for Request visualization
 addEffectNode :: String -> String -> DiagramState -> DiagramState
 addEffectNode nodeId label = addLine (nodeId <> "{{" <> escapeLabel label <> "}}")
+
+processTimeoutCPS :: forall i o a b. Flow.Types.TimeoutCPS i o a b -> DiagramState -> NodeResult
+processTimeoutCPS (Flow.Types.TimeoutCPS k) st =
+  k \(Flow.Types.Milliseconds ms) inner _ ->
+    let
+      Data.Tuple.Tuple subgraphId st' = freshId st
+      st1 = addLine ("subgraph timeout_" <> subgraphId <> " [Timeout " <> show ms <> "ms]") st'
+      innerResult = processWorkflow inner st1
+      st2 = addLine "end" innerResult.state
+    in
+      { entryId: innerResult.entryId, exitId: innerResult.exitId, state: st2 }
+
+processRetryCPS :: forall i o a b. Flow.Types.RetryCPS i o a b -> DiagramState -> NodeResult
+processRetryCPS (Flow.Types.RetryCPS k) st =
+  k \policy inner _ ->
+    let
+      (Flow.Types.RetryPolicy p) = policy
+      Data.Tuple.Tuple subgraphId st' = freshId st
+      label = "Retry " <> show p.maxAttempts <> "x"
+      st1 = addLine ("subgraph retry_" <> subgraphId <> " [" <> label <> "]") st'
+      innerResult = processWorkflow inner st1
+      st2 = addLine "end" innerResult.state
+    in
+      { entryId: innerResult.entryId, exitId: innerResult.exitId, state: st2 }
