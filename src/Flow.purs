@@ -12,3 +12,4 @@ import Flow.Core ((>>>), (***), (|||))
 import Flow.Interpret.Diagram as Flow.Interpret.Diagram
 import Flow.Interpret.Effect as Flow.Interpret.Effect
 import Flow.Types as Flow.Types
+import Flow.Types ((~>))

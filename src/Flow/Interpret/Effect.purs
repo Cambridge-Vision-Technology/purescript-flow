@@ -1,27 +1,41 @@
 module Flow.Interpret.Effect
   ( runWorkflowM
-  , EffectHandler
+  , runWorkflow
+  , EventHandler
   , calculateBackoff
   ) where
 
 import Prelude
 
+import Data.Array as Data.Array
+import Data.Array.NonEmpty as Data.Array.NonEmpty
 import Data.Either as Data.Either
 import Data.Exists as Data.Exists
-import Data.Functor.Variant as Data.Functor.Variant
+import Data.Identity as Data.Identity
 import Data.Int as Data.Int
+import Data.Maybe as Data.Maybe
 import Data.Traversable as Data.Traversable
 import Data.Tuple as Data.Tuple
+import Data.Variant as Data.Variant
 import Flow.Class.Schedule as Flow.Class.Schedule
 import Flow.Types as Flow.Types
 
-type EffectHandler m o = forall x. Data.Functor.Variant.VariantF o x -> m x
+type EventHandler m i o = Data.Variant.Variant o -> m (Data.Variant.Variant i)
+
+runWorkflow :: forall a b. Flow.Types.Workflow () () a b -> a -> b
+runWorkflow w a =
+  let
+    handler :: EventHandler Data.Identity.Identity () ()
+    handler = Data.Variant.case_
+    Data.Identity.Identity result = runWorkflowM handler w a
+  in
+    result
 
 runWorkflowM
   :: forall m i o a b
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> Flow.Types.Workflow i o a b
   -> a
   -> m b
@@ -38,8 +52,11 @@ runWorkflowM handler (Flow.Types.Par parCps) a =
 runWorkflowM handler (Flow.Types.Choice choiceCps) a =
   runChoiceCPSM handler choiceCps a
 
-runWorkflowM handler (Flow.Types.Request _ requestCps) a =
-  runRequestCPS handler requestCps a
+runWorkflowM handler (Flow.Types.Leaf _ leafCps) a =
+  runLeafCPS handler leafCps a
+
+runWorkflowM handler (Flow.Types.Encap _ encapCps) a =
+  runEncapCPS handler encapCps a
 
 runWorkflowM handler (Flow.Types.MapArray mapArrayCps) a =
   runMapArrayCPSM handler mapArrayCps a
@@ -54,7 +71,7 @@ runSeqM
   :: forall m i o a b x
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> a
   -> Flow.Types.SeqF i o a b x
   -> m b
@@ -66,7 +83,7 @@ runParCPSM
   :: forall m i o a b
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> Flow.Types.ParCPS i o a b
   -> a
   -> m b
@@ -83,7 +100,7 @@ runChoiceCPSM
   :: forall m i o a b
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> Flow.Types.ChoiceCPS i o a b
   -> a
   -> m b
@@ -93,25 +110,82 @@ runChoiceCPSM handler (Flow.Types.ChoiceCPS k) a =
       Data.Either.Left x -> runWorkflowM handler leftW x
       Data.Either.Right y -> runWorkflowM handler rightW y
 
-runRequestCPS
+runLeafCPS
+  :: forall m i o a b
+   . Monad m
+  => EventHandler m i o
+  -> Flow.Types.LeafCPS i o a b
+  -> a
+  -> m b
+runLeafCPS handler (Flow.Types.LeafCPS k) a =
+  k \initFn stepFn ->
+    case initFn a of
+      Flow.Types.LeafDone b ->
+        pure b
+      Flow.Types.LeafContinue state messages ->
+        processLeafMessages handler stepFn state (Data.Array.NonEmpty.toArray messages)
+
+processLeafMessages
+  :: forall m i o s b
+   . Monad m
+  => EventHandler m i o
+  -> (s -> Data.Variant.Variant i -> Flow.Types.LeafStep o s b)
+  -> s
+  -> Array (Data.Variant.Variant o)
+  -> m b
+processLeafMessages handler stepFn state messages = do
+  events <- Data.Traversable.traverse handler messages
+  processLeafEvents handler stepFn state events
+
+processLeafEvents
+  :: forall m i o s b
+   . Monad m
+  => EventHandler m i o
+  -> (s -> Data.Variant.Variant i -> Flow.Types.LeafStep o s b)
+  -> s
+  -> Array (Data.Variant.Variant i)
+  -> m b
+processLeafEvents handler stepFn state events = case Data.Array.uncons events of
+  Data.Maybe.Nothing ->
+    processLeafMessages handler stepFn state []
+  Data.Maybe.Just { head: event, tail: rest } ->
+    case stepFn state event of
+      Flow.Types.LeafDone b ->
+        pure b
+      Flow.Types.LeafContinue newState messages ->
+        let
+          newMessages = Data.Array.NonEmpty.toArray messages
+        in
+          do
+            moreEvents <- Data.Traversable.traverse handler newMessages
+            processLeafEvents handler stepFn newState (rest <> moreEvents)
+
+runEncapCPS
   :: forall m i o a b
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
-  -> Flow.Types.RequestCPS i o a b
+  => EventHandler m i o
+  -> Flow.Types.EncapCPS i o a b
   -> a
   -> m b
-runRequestCPS handler (Flow.Types.RequestCPS k) a =
-  k \toRequest fromResponse -> do
-    let request = toRequest a
-    response <- handler request
-    runWorkflowM handler (fromResponse response) response
+runEncapCPS outerHandler (Flow.Types.EncapCPS k) a =
+  k \enc innerWorkflow ->
+    let
+      (Flow.Types.Encapsulation fns) = enc
+
+      innerHandler :: EventHandler m _ _
+      innerHandler msg = do
+        let outerMsg = fns.messages msg
+        outerEvent <- outerHandler outerMsg
+        pure (fns.events outerEvent)
+    in
+      runWorkflowM innerHandler innerWorkflow a
 
 runMapArrayCPSM
   :: forall m i o a b
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> Flow.Types.MapArrayCPS i o a b
   -> a
   -> m b
@@ -125,7 +199,7 @@ runTimeoutCPSM
   :: forall m i o a b
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> Flow.Types.TimeoutCPS i o a b
   -> a
   -> m b
@@ -144,7 +218,7 @@ runRetryCPSM
   :: forall m i o a b
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> Flow.Types.RetryCPS i o a b
   -> a
   -> m b
@@ -157,7 +231,7 @@ retryLoop
   :: forall m i o a e innerB
    . Monad m
   => Flow.Class.Schedule.MonadSchedule m
-  => EffectHandler m o
+  => EventHandler m i o
   -> Flow.Types.RetryPolicy
   -> Flow.Types.Workflow i o a (Data.Either.Either e innerB)
   -> a

@@ -8,7 +8,7 @@ module Flow.Core
   , (***)
   , fanin
   , (|||)
-  , request
+  , leaf
   , mapArray
   , timeout
   , retry
@@ -18,8 +18,8 @@ module Flow.Core
 import Prelude hiding ((>>>))
 
 import Data.Either as Data.Either
-import Data.Functor.Variant as Data.Functor.Variant
 import Data.Tuple as Data.Tuple
+import Data.Variant as Data.Variant
 import Flow.Types as Flow.Types
 
 step :: forall i o a b. String -> Flow.Types.Workflow i o a b -> Flow.Types.Workflow i o a b
@@ -51,13 +51,13 @@ fanin
   -> Flow.Types.Workflow i o (Data.Either.Either a b) c
 fanin left right = Flow.Types.mkChoice identity left right
 
-request
-  :: forall i o a b x
+leaf
+  :: forall i o a b s
    . String
-  -> (a -> Data.Functor.Variant.VariantF o x)
-  -> (x -> Flow.Types.Workflow i o x b)
+  -> (a -> Flow.Types.LeafStep o s b)
+  -> (s -> Data.Variant.Variant i -> Flow.Types.LeafStep o s b)
   -> Flow.Types.Workflow i o a b
-request = Flow.Types.mkRequest
+leaf = Flow.Types.mkLeaf
 
 mapArray
   :: forall i o x y

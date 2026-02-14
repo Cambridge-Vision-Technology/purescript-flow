@@ -3,14 +3,20 @@ module Flow.Types
   , SeqF(..)
   , ParCPS(..)
   , ChoiceCPS(..)
-  , RequestCPS(..)
+  , LeafCPS(..)
+  , LeafStep(..)
+  , Encapsulation(..)
+  , EncapCPS(..)
   , MapArrayCPS(..)
   , TimeoutCPS(..)
   , RetryCPS(..)
   , mkSeq
   , mkPar
   , mkChoice
-  , mkRequest
+  , mkLeaf
+  , encapsulate
+  , applyEncapsulation
+  , (~>)
   , mkMapArray
   , mkTimeout
   , mkRetry
@@ -24,14 +30,15 @@ import Prelude
 
 import Control.Category as Control.Category
 import Control.Semigroupoid as Control.Semigroupoid
+import Data.Array.NonEmpty as Data.Array.NonEmpty
 import Data.Either as Data.Either
 import Data.Exists as Data.Exists
-import Data.Functor.Variant as Data.Functor.Variant
 import Data.Newtype as Data.Newtype
 import Data.Profunctor as Data.Profunctor
 import Data.Profunctor.Choice as Data.Profunctor.Choice
 import Data.Profunctor.Strong as Data.Profunctor.Strong
 import Data.Tuple as Data.Tuple
+import Data.Variant as Data.Variant
 
 newtype Milliseconds = Milliseconds Int
 
@@ -83,27 +90,28 @@ instance (Show e, Show a) => Show (RetryResult e a) where
       <> " }"
 
 -- NOTE: Seq uses Data.Exists for a single-variable existential (the intermediate type x),
--- which is the idiomatic PureScript approach. Par, Choice, Request, Timeout, and Retry use
+-- which is the idiomatic PureScript approach. Par, Choice, Leaf, Timeout, and Retry use
 -- CPS encoding instead because they hide multiple existential variables along with accessor
 -- functions — CPS is more natural when the existential payload includes both types and
 -- functions that operate on those types.
-data Workflow (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b
+data Workflow (i :: Row Type) (o :: Row Type) a b
   = Pure (a -> b)
   | Step String (Workflow i o a b)
   | Seq (Data.Exists.Exists (SeqF i o a b))
   | Par (ParCPS i o a b)
   | Choice (ChoiceCPS i o a b)
-  | Request String (RequestCPS i o a b)
+  | Leaf String (LeafCPS i o a b)
+  | Encap String (EncapCPS i o a b)
   | MapArray (MapArrayCPS i o a b)
   | Timeout (TimeoutCPS i o a b)
   | Retry (RetryCPS i o a b)
 
-data SeqF (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b x = SeqF (Workflow i o a x) (Workflow i o x b)
+data SeqF (i :: Row Type) (o :: Row Type) a b x = SeqF (Workflow i o a x) (Workflow i o x b)
 
 mkSeq :: forall i o a b x. Workflow i o a x -> Workflow i o x b -> Workflow i o a b
 mkSeq w1 w2 = Seq (Data.Exists.mkExists (SeqF w1 w2))
 
-newtype ParCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = ParCPS
+newtype ParCPS (i :: Row Type) (o :: Row Type) a b = ParCPS
   ( forall r
      . ( forall a1 b1 a2 b2
           . (a -> a1)
@@ -129,7 +137,7 @@ mkPar w1 w2 = Par (ParCPS (\k -> k fst' snd' Data.Tuple.Tuple w1 w2))
   snd' :: Data.Tuple.Tuple a1 a2 -> a2
   snd' (Data.Tuple.Tuple _ a) = a
 
-newtype ChoiceCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = ChoiceCPS
+newtype ChoiceCPS (i :: Row Type) (o :: Row Type) a b = ChoiceCPS
   ( forall r
      . ( forall x y
           . (a -> Data.Either.Either x y)
@@ -148,25 +156,63 @@ mkChoice
   -> Workflow i o a b
 mkChoice splitFn leftW rightW = Choice (ChoiceCPS (\k -> k splitFn leftW rightW))
 
-newtype RequestCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = RequestCPS
+data LeafStep (o :: Row Type) s b
+  = LeafContinue s (Data.Array.NonEmpty.NonEmptyArray (Data.Variant.Variant o))
+  | LeafDone b
+
+newtype LeafCPS (i :: Row Type) (o :: Row Type) a b = LeafCPS
   ( forall r
-     . ( forall x
-          . (a -> Data.Functor.Variant.VariantF o x)
-         -> (x -> Workflow i o x b)
+     . ( forall s
+          . (a -> LeafStep o s b)
+         -> (s -> Data.Variant.Variant i -> LeafStep o s b)
          -> r
        )
     -> r
   )
 
-mkRequest
-  :: forall i o a b x
+mkLeaf
+  :: forall i o a b s
    . String
-  -> (a -> Data.Functor.Variant.VariantF o x)
-  -> (x -> Workflow i o x b)
+  -> (a -> LeafStep o s b)
+  -> (s -> Data.Variant.Variant i -> LeafStep o s b)
   -> Workflow i o a b
-mkRequest label toRequest fromResponse = Request label (RequestCPS (\k -> k toRequest fromResponse))
+mkLeaf label initFn stepFn = Leaf label (LeafCPS (\k -> k initFn stepFn))
 
-newtype MapArrayCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = MapArrayCPS
+newtype Encapsulation (i :: Row Type) (o :: Row Type) (j :: Row Type) (p :: Row Type) = Encapsulation
+  { events :: Data.Variant.Variant j -> Data.Variant.Variant i
+  , messages :: Data.Variant.Variant o -> Data.Variant.Variant p
+  }
+
+derive instance Data.Newtype.Newtype (Encapsulation i o j p) _
+
+newtype EncapCPS (j :: Row Type) (p :: Row Type) a b = EncapCPS
+  ( forall r
+     . ( forall i o
+          . Encapsulation i o j p
+         -> Workflow i o a b
+         -> r
+       )
+    -> r
+  )
+
+encapsulate
+  :: forall i o j p a b
+   . String
+  -> Encapsulation i o j p
+  -> Workflow i o a b
+  -> Workflow j p a b
+encapsulate label enc inner = Encap label (EncapCPS (\k -> k enc inner))
+
+infixl 4 applyEncapsulation as ~>
+
+applyEncapsulation
+  :: forall i o j p a b
+   . Workflow i o a b
+  -> Encapsulation i o j p
+  -> Workflow j p a b
+applyEncapsulation inner enc = encapsulate "" enc inner
+
+newtype MapArrayCPS (i :: Row Type) (o :: Row Type) a b = MapArrayCPS
   ( forall r
      . ( forall x y
           . Workflow i o x y
@@ -183,7 +229,7 @@ mkMapArray
   -> Workflow i o (Array x) (Array y)
 mkMapArray inner = MapArray (MapArrayCPS (\k -> k inner identity identity))
 
-newtype TimeoutCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = TimeoutCPS
+newtype TimeoutCPS (i :: Row Type) (o :: Row Type) a b = TimeoutCPS
   ( forall r
      . ( forall innerB
           . Milliseconds
@@ -201,7 +247,7 @@ mkTimeout
   -> Workflow i o a (Data.Either.Either TimeoutError b)
 mkTimeout duration inner = Timeout (TimeoutCPS (\k -> k duration inner identity))
 
-newtype RetryCPS (i :: Row (Type -> Type)) (o :: Row (Type -> Type)) a b = RetryCPS
+newtype RetryCPS (i :: Row Type) (o :: Row Type) a b = RetryCPS
   ( forall r
      . ( forall e innerB
           . RetryPolicy

@@ -29,6 +29,63 @@ project:
     - **Platform-agnostic**: No Effect/Aff imports; interpretation at edges
     - **Type-safe**: Row polymorphism for effect composition
 
+    ## Leaf Composition Pattern
+
+    Each leaf declares only its OWN events/messages with an open row `r`. Composition via `>>>` unifies the rows automatically.
+
+    ```purescript
+    -- Each leaf declares its own event/message types (open row)
+    type FetchEvents r = (userFetched :: Either String User | r)
+    type FetchMessages r = (fetchUser :: UserId | r)
+
+    type SaveEvents r = (userSaved :: Either String Unit | r)
+    type SaveMessages r = (saveUser :: User | r)
+
+    -- Each leaf only knows about its own events
+    fetchLeaf :: forall r_i r_o.
+      Workflow (FetchEvents r_i) (FetchMessages r_o) UserId (Either Error User)
+    fetchLeaf = leaf "Fetch User" fetchInit fetchStep
+      where
+      fetchStep state event =
+        Data.Variant.on _userFetched
+          (\result -> LeafDone result)
+          (\_ -> LeafDone (Left (InternalError "Unexpected event")))
+          event
+
+    -- Composition unifies r_i and r_o across leaves
+    pipeline = fetchLeaf >>> saveLeaf
+    -- Inferred: Workflow (FetchEvents (SaveEvents ())) (FetchMessages (SaveMessages ())) ...
+
+    -- Handler closes the rows
+    handler :: EventHandler m (FetchEvents (SaveEvents ())) (FetchMessages (SaveMessages ()))
+    ```
+
+    ### Anti-pattern: closed rows per leaf
+
+    ```purescript
+    -- BAD: closing rows forces exhaustive matching of ALL events in EVERY leaf
+    fetchLeaf :: Workflow (AllEvents ()) (AllMessages ()) ...
+    fetchStep state event = Data.Variant.match
+      { userFetched: \r -> ...      -- the one we care about
+      , userSaved: \_ -> ...        -- boilerplate catch-all
+      , emailSent: \_ -> ...        -- boilerplate catch-all
+      }
+
+    -- GOOD: open rows + Variant.on = one catch-all per leaf
+    fetchLeaf :: forall r_i r_o. Workflow (FetchEvents r_i) (FetchMessages r_o) ...
+    fetchStep state event =
+      Data.Variant.on _userFetched handleFetch
+        (\_ -> LeafDone (Left (InternalError "Unexpected event")))
+        event
+    ```
+
+    ### Key rules
+
+    - Use `Data.Variant.on` (handles one case + fallback), NOT `Data.Variant.match` (requires exhaustive closed row)
+    - Declare per-leaf row types with open `r`: `type MyEvents r = (myEvent :: Payload | r)`
+    - Only close to `()` at the top-level workflow signature and handler
+    - Errors go in the `b` type as `Either Error Result`
+
     ## No FFI Policy
 
     This library is pure PureScript. No `.js` or `.erl` files are allowed in `src/`.

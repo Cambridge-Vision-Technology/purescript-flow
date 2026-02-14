@@ -3,10 +3,12 @@ module Test.Effect where
 import Prelude
 
 import Control.Category as Control.Category
+import Data.Array.NonEmpty as Data.Array.NonEmpty
 import Data.Either as Data.Either
-import Data.Functor.Variant as Data.Functor.Variant
 import Data.Identity as Data.Identity
+import Data.String as Data.String
 import Data.Tuple as Data.Tuple
+import Data.Variant as Data.Variant
 import Flow.Interpret.Effect as Flow.Interpret.Effect
 import Flow.Types as Flow.Types
 import Test.BDD as Test.BDD
@@ -14,12 +16,6 @@ import Test.Util as Test.Util
 import Test.Spec as Test.Spec
 import Test.Spec.Assertions as Test.Spec.Assertions
 import Type.Proxy as Type.Proxy
-
-data CounterF a = Increment (Int -> a) | GetCount (Int -> a)
-
-derive instance Functor CounterF
-
-type COUNTER r = (counter :: CounterF | r)
 
 spec :: Test.Spec.Spec Unit
 spec = Test.BDD.feature "Effect interpreter" do
@@ -49,57 +45,33 @@ spec = Test.BDD.feature "Effect interpreter" do
   Test.BDD.scenario "sequential workflows" do
     Test.Spec.it "executes in order" do
       let
-        doubleW :: Flow.Types.Workflow () () Int Int
-        doubleW = Flow.Types.Pure (_ * 2)
-
-        addTenW :: Flow.Types.Workflow () () Int Int
-        addTenW = Flow.Types.Pure (_ + 10)
-
         workflow :: Flow.Types.Workflow () () Int Int
-        workflow = doubleW Control.Category.>>> addTenW
+        workflow = Test.Util.doubleW Control.Category.>>> Test.Util.addTenW
         result = Test.Util.runPure workflow 5
       result `Test.Spec.Assertions.shouldEqual` 20
 
     Test.Spec.it "composes three workflows" do
       let
-        doubleW :: Flow.Types.Workflow () () Int Int
-        doubleW = Flow.Types.Pure (_ * 2)
-
-        addTenW :: Flow.Types.Workflow () () Int Int
-        addTenW = Flow.Types.Pure (_ + 10)
-
-        negateW :: Flow.Types.Workflow () () Int Int
-        negateW = Flow.Types.Pure negate
-
         workflow :: Flow.Types.Workflow () () Int Int
-        workflow = doubleW Control.Category.>>> addTenW Control.Category.>>> negateW
+        workflow = Test.Util.doubleW Control.Category.>>> Test.Util.addTenW Control.Category.>>> Test.Util.negateW
         result = Test.Util.runPure workflow 5
       result `Test.Spec.Assertions.shouldEqual` (-20)
 
   Test.BDD.scenario "parallel workflows" do
     Test.Spec.it "executes both branches" do
       let
-        doubleW :: Flow.Types.Workflow () () Int Int
-        doubleW = Flow.Types.Pure (_ * 2)
-
-        negateW :: Flow.Types.Workflow () () Int Int
-        negateW = Flow.Types.Pure negate
-
         workflow :: Flow.Types.Workflow () () (Data.Tuple.Tuple Int Int) (Data.Tuple.Tuple Int Int)
-        workflow = Flow.Types.mkPar doubleW negateW
+        workflow = Flow.Types.mkPar Test.Util.doubleW Test.Util.negateW
         result = Test.Util.runPure workflow (Data.Tuple.Tuple 5 3)
       result `Test.Spec.Assertions.shouldEqual` (Data.Tuple.Tuple 10 (-3))
 
     Test.Spec.it "handles different types" do
       let
-        showW :: Flow.Types.Workflow () () Int String
-        showW = Flow.Types.Pure show
-
         lengthW :: Flow.Types.Workflow () () String Int
         lengthW = Flow.Types.Pure (\_ -> 5)
 
         workflow :: Flow.Types.Workflow () () (Data.Tuple.Tuple Int String) (Data.Tuple.Tuple String Int)
-        workflow = Flow.Types.mkPar showW lengthW
+        workflow = Flow.Types.mkPar Test.Util.showW lengthW
         result = Test.Util.runPure workflow (Data.Tuple.Tuple 42 "hello")
       result `Test.Spec.Assertions.shouldEqual` (Data.Tuple.Tuple "42" 5)
 
@@ -181,24 +153,18 @@ spec = Test.BDD.feature "Effect interpreter" do
   Test.BDD.scenario "category laws" do
     Test.Spec.it "left identity: id >>> w == w" do
       let
-        doubleW :: Flow.Types.Workflow () () Int Int
-        doubleW = Flow.Types.Pure (_ * 2)
-
         workflow :: Flow.Types.Workflow () () Int Int
-        workflow = Control.Category.identity Control.Category.>>> doubleW
+        workflow = Control.Category.identity Control.Category.>>> Test.Util.doubleW
         result = Test.Util.runPure workflow 5
-        expected = Test.Util.runPure doubleW 5
+        expected = Test.Util.runPure Test.Util.doubleW 5
       result `Test.Spec.Assertions.shouldEqual` expected
 
     Test.Spec.it "right identity: w >>> id == w" do
       let
-        doubleW :: Flow.Types.Workflow () () Int Int
-        doubleW = Flow.Types.Pure (_ * 2)
-
         workflow :: Flow.Types.Workflow () () Int Int
-        workflow = doubleW Control.Category.>>> Control.Category.identity
+        workflow = Test.Util.doubleW Control.Category.>>> Control.Category.identity
         result = Test.Util.runPure workflow 5
-        expected = Test.Util.runPure doubleW 5
+        expected = Test.Util.runPure Test.Util.doubleW 5
       result `Test.Spec.Assertions.shouldEqual` expected
 
   Test.BDD.scenario "named steps" do
@@ -211,59 +177,6 @@ spec = Test.BDD.feature "Effect interpreter" do
             Control.Category.>>> Flow.Types.Step "Negate" (Flow.Types.Pure negate)
         result = Test.Util.runPure workflow 5
       result `Test.Spec.Assertions.shouldEqual` (-20)
-
-  Test.BDD.scenario "request workflows" do
-    Test.Spec.it "executes with handler using Identity monad" do
-      let
-        workflow :: Flow.Types.Workflow () (COUNTER ()) Unit Int
-        workflow = Flow.Types.mkRequest "Get Count"
-          (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (GetCount identity))
-          (\count -> Flow.Types.Pure (\_ -> count))
-
-        handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity (COUNTER ())
-        handler = Data.Functor.Variant.on (Type.Proxy.Proxy :: _ "counter")
-          ( \op -> case op of
-              GetCount k -> Data.Identity.Identity (k 42)
-              Increment k -> Data.Identity.Identity (k 1)
-          )
-          Data.Functor.Variant.case_
-        Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow unit
-      result `Test.Spec.Assertions.shouldEqual` 42
-
-    Test.Spec.it "handles sequential requests" do
-      let
-        getW :: Flow.Types.Workflow () (COUNTER ()) Unit Int
-        getW = Flow.Types.mkRequest "Get Count"
-          (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (GetCount identity))
-          (\count -> Flow.Types.Pure (\_ -> count))
-
-        incW :: Flow.Types.Workflow () (COUNTER ()) Unit Int
-        incW = Flow.Types.mkRequest "Increment"
-          (\_ -> Data.Functor.Variant.inj (Type.Proxy.Proxy :: _ "counter") (Increment identity))
-          (\delta -> Flow.Types.Pure (\_ -> delta))
-
-        workflow :: Flow.Types.Workflow () (COUNTER ()) Unit Int
-        workflow = incW Control.Category.>>> Flow.Types.Pure (\_ -> unit) Control.Category.>>> getW
-
-        handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity (COUNTER ())
-        handler = Data.Functor.Variant.on (Type.Proxy.Proxy :: _ "counter")
-          ( \op -> case op of
-              GetCount k -> Data.Identity.Identity (k 100)
-              Increment k -> Data.Identity.Identity (k 1)
-          )
-          Data.Functor.Variant.case_
-        Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow unit
-      result `Test.Spec.Assertions.shouldEqual` 100
-
-    Test.Spec.it "pure workflows work with monadic runner" do
-      let
-        workflow :: Flow.Types.Workflow () () Int Int
-        workflow = Flow.Types.Pure (_ * 2)
-
-        handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity ()
-        handler = Data.Functor.Variant.case_
-        Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow 5
-      result `Test.Spec.Assertions.shouldEqual` 10
 
   Test.BDD.scenario "mapArray workflows" do
     Test.Spec.it "applies inner workflow to each element" do
@@ -300,3 +213,201 @@ spec = Test.BDD.feature "Effect interpreter" do
 
         result = Test.Util.runPure workflow [ 5, 10 ]
       result `Test.Spec.Assertions.shouldEqual` [ 11, 21 ]
+
+  Test.BDD.feature "Leaf Execution" do
+    Test.BDD.scenario "single-step leaf execution with event handler" do
+      Test.Spec.it "sends message via init and processes returned event" do
+        let
+          singleStepLeaf :: Flow.Types.Workflow (req :: String) (resp :: Int) Unit Int
+          singleStepLeaf = Flow.Types.mkLeaf "single"
+            (\_ -> Flow.Types.LeafContinue unit (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "resp") 0)))
+            ( \_ event ->
+                Data.Variant.on (Type.Proxy.Proxy :: _ "req")
+                  (\msg -> Flow.Types.LeafDone (Data.String.length msg))
+                  Data.Variant.case_
+                  event
+            )
+
+          handler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity (req :: String) (resp :: Int)
+          handler = Data.Variant.on (Type.Proxy.Proxy :: _ "resp")
+            (\_ -> Data.Identity.Identity (Data.Variant.inj (Type.Proxy.Proxy :: _ "req") "response"))
+            Data.Variant.case_
+
+          Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler singleStepLeaf unit
+        result `Test.Spec.Assertions.shouldEqual` 8
+
+    Test.BDD.scenario "multi-step leaf with state progression" do
+      Test.Spec.it "processes three events before completing" do
+        let
+          counterLeaf :: Flow.Types.Workflow (tick :: Unit) (count :: Int) Unit Int
+          counterLeaf = Flow.Types.mkLeaf "counter"
+            (\_ -> Flow.Types.LeafContinue 0 (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "count") 0)))
+            ( \s event ->
+                Data.Variant.on (Type.Proxy.Proxy :: _ "tick")
+                  ( \_ ->
+                      let
+                        newState = s + 1
+                      in
+                        if newState >= 3 then Flow.Types.LeafDone newState
+                        else Flow.Types.LeafContinue newState (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "count") newState))
+                  )
+                  Data.Variant.case_
+                  event
+            )
+
+          handler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity (tick :: Unit) (count :: Int)
+          handler = Data.Variant.on (Type.Proxy.Proxy :: _ "count")
+            (\_ -> Data.Identity.Identity (Data.Variant.inj (Type.Proxy.Proxy :: _ "tick") unit))
+            Data.Variant.case_
+
+          Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler counterLeaf unit
+        result `Test.Spec.Assertions.shouldEqual` 3
+
+    Test.BDD.scenario "leaf emits multiple messages per step" do
+      Test.Spec.it "processes all returned events from multiple init messages" do
+        let
+          multiMsgLeaf :: Flow.Types.Workflow (val :: Int) (ask :: String) Unit Int
+          multiMsgLeaf = Flow.Types.mkLeaf "multi"
+            ( \_ ->
+                Flow.Types.LeafContinue 0
+                  ( Data.Array.NonEmpty.cons' (Data.Variant.inj (Type.Proxy.Proxy :: _ "ask") "first")
+                      [ Data.Variant.inj (Type.Proxy.Proxy :: _ "ask") "second" ]
+                  )
+            )
+            ( \s event ->
+                Data.Variant.on (Type.Proxy.Proxy :: _ "val")
+                  ( \v ->
+                      let
+                        newState = s + v
+                      in
+                        if newState >= 2 then Flow.Types.LeafDone newState
+                        else Flow.Types.LeafContinue newState (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "ask") "more"))
+                  )
+                  Data.Variant.case_
+                  event
+            )
+
+          handler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity (val :: Int) (ask :: String)
+          handler = Data.Variant.on (Type.Proxy.Proxy :: _ "ask")
+            (\_ -> Data.Identity.Identity (Data.Variant.inj (Type.Proxy.Proxy :: _ "val") 1))
+            Data.Variant.case_
+
+          Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler multiMsgLeaf unit
+        result `Test.Spec.Assertions.shouldEqual` 2
+
+  Test.BDD.feature "Encapsulated Execution" do
+    Test.BDD.scenario "stateless encapsulation translates during execution" do
+      Test.Spec.it "maps between outer and inner event/message types" do
+        let
+          innerLeaf :: Flow.Types.Workflow (innerReq :: String) (innerResp :: Int) Unit Int
+          innerLeaf = Flow.Types.mkLeaf "inner"
+            (\_ -> Flow.Types.LeafContinue unit (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "innerResp") 42)))
+            ( \_ event ->
+                Data.Variant.on (Type.Proxy.Proxy :: _ "innerReq")
+                  (\msg -> Flow.Types.LeafDone (Data.String.length msg))
+                  Data.Variant.case_
+                  event
+            )
+
+          enc :: Flow.Types.Encapsulation (innerReq :: String) (innerResp :: Int) (outerReq :: String) (outerResp :: Int)
+          enc = Flow.Types.Encapsulation
+            { events: Data.Variant.on (Type.Proxy.Proxy :: _ "outerReq")
+                (\s -> Data.Variant.inj (Type.Proxy.Proxy :: _ "innerReq") s)
+                Data.Variant.case_
+            , messages: Data.Variant.on (Type.Proxy.Proxy :: _ "innerResp")
+                (\n -> Data.Variant.inj (Type.Proxy.Proxy :: _ "outerResp") n)
+                Data.Variant.case_
+            }
+
+          encapsulatedWorkflow :: Flow.Types.Workflow (outerReq :: String) (outerResp :: Int) Unit Int
+          encapsulatedWorkflow = Flow.Types.encapsulate "encap" enc innerLeaf
+
+          outerHandler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity (outerReq :: String) (outerResp :: Int)
+          outerHandler = Data.Variant.on (Type.Proxy.Proxy :: _ "outerResp")
+            (\_ -> Data.Identity.Identity (Data.Variant.inj (Type.Proxy.Proxy :: _ "outerReq") "hello"))
+            Data.Variant.case_
+
+          Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM outerHandler encapsulatedWorkflow unit
+        result `Test.Spec.Assertions.shouldEqual` 5
+
+  Test.BDD.feature "Composed Execution" do
+    Test.BDD.scenario "sequential leaf workflows execute in order" do
+      Test.Spec.it "composes two leaf workflows with >>>" do
+        let
+          leaf1 :: Flow.Types.Workflow (ev1 :: Int) (msg1 :: String) Unit Int
+          leaf1 = Flow.Types.mkLeaf "leaf1"
+            (\_ -> Flow.Types.LeafContinue unit (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "msg1") "start")))
+            ( \_ event ->
+                Data.Variant.on (Type.Proxy.Proxy :: _ "ev1")
+                  (\n -> Flow.Types.LeafDone (n * 2))
+                  Data.Variant.case_
+                  event
+            )
+
+          leaf2 :: Flow.Types.Workflow (ev1 :: Int) (msg1 :: String) Int String
+          leaf2 = Flow.Types.mkLeaf "leaf2"
+            (\n -> Flow.Types.LeafContinue n (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "msg1") "next")))
+            ( \s event ->
+                Data.Variant.on (Type.Proxy.Proxy :: _ "ev1")
+                  (\n -> Flow.Types.LeafDone (show (s + n)))
+                  Data.Variant.case_
+                  event
+            )
+
+          composed :: Flow.Types.Workflow (ev1 :: Int) (msg1 :: String) Unit String
+          composed = leaf1 Control.Category.>>> leaf2
+
+          handler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity (ev1 :: Int) (msg1 :: String)
+          handler = Data.Variant.on (Type.Proxy.Proxy :: _ "msg1")
+            (\_ -> Data.Identity.Identity (Data.Variant.inj (Type.Proxy.Proxy :: _ "ev1") 3))
+            Data.Variant.case_
+
+          Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler composed unit
+        result `Test.Spec.Assertions.shouldEqual` "9"
+
+    Test.BDD.scenario "parallel leaf workflows via MonadSchedule" do
+      Test.Spec.it "executes both branches of mkPar with pure inner workflows" do
+        let
+          workflow :: Flow.Types.Workflow () () (Data.Tuple.Tuple Int Int) (Data.Tuple.Tuple Int Int)
+          workflow = Flow.Types.mkPar Test.Util.doubleW Test.Util.addTenW
+
+          handler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity () ()
+          handler = Data.Variant.case_
+
+          Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler workflow (Data.Tuple.Tuple 5 7)
+        result `Test.Spec.Assertions.shouldEqual` (Data.Tuple.Tuple 10 17)
+
+    Test.BDD.scenario "choice with leaf workflows" do
+      Test.Spec.it "executes Left branch" do
+        let
+          leftW :: Flow.Types.Workflow () () Int String
+          leftW = Flow.Types.Pure (\n -> "left:" <> show n)
+
+          rightW :: Flow.Types.Workflow () () String String
+          rightW = Flow.Types.Pure (\s -> "right:" <> s)
+
+          workflow :: Flow.Types.Workflow () () (Data.Either.Either Int String) String
+          workflow = Flow.Types.mkChoice identity leftW rightW
+
+          handler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity () ()
+          handler = Data.Variant.case_
+
+          Data.Identity.Identity leftResult = Flow.Interpret.Effect.runWorkflowM handler workflow (Data.Either.Left 42)
+        leftResult `Test.Spec.Assertions.shouldEqual` "left:42"
+
+      Test.Spec.it "executes Right branch" do
+        let
+          leftW :: Flow.Types.Workflow () () Int String
+          leftW = Flow.Types.Pure (\n -> "left:" <> show n)
+
+          rightW :: Flow.Types.Workflow () () String String
+          rightW = Flow.Types.Pure (\s -> "right:" <> s)
+
+          workflow :: Flow.Types.Workflow () () (Data.Either.Either Int String) String
+          workflow = Flow.Types.mkChoice identity leftW rightW
+
+          handler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity () ()
+          handler = Data.Variant.case_
+
+          Data.Identity.Identity rightResult = Flow.Interpret.Effect.runWorkflowM handler workflow (Data.Either.Right "hello")
+        rightResult `Test.Spec.Assertions.shouldEqual` "right:hello"

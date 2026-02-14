@@ -1,2 +1,5 @@
 result
 .spec-results
+output/
+CLAUDE.md
+AGENTS.md

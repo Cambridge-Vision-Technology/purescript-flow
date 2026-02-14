@@ -2,17 +2,57 @@ module Demo.Main where
 
 import Prelude
 
+import Data.Array.NonEmpty as Data.Array.NonEmpty
 import Data.Either as Data.Either
+import Data.Identity as Data.Identity
 import Data.Tuple as Data.Tuple
+import Data.Variant as Data.Variant
 import Effect as Effect
 import Effect.Console as Effect.Console
-import Flow as Flow
 import Flow.Core as Flow.Core
 import Flow.Interpret.Diagram as Flow.Interpret.Diagram
-import Data.Functor.Variant as Data.Functor.Variant
-import Data.Identity as Data.Identity
 import Flow.Interpret.Effect as Flow.Interpret.Effect
 import Flow.Types as Flow.Types
+import Type.Proxy as Type.Proxy
+
+type DomainResponse r = (userFound :: String | r)
+type DomainRequest r = (fetchUser :: String | r)
+
+type PlatformResponse r = (httpResult :: String | r)
+type PlatformRequest r = (httpGet :: String | r)
+
+fetchUserWorkflow :: Flow.Types.Workflow (DomainResponse ()) (DomainRequest ()) String String
+fetchUserWorkflow = Flow.Core.leaf "Fetch User"
+  (\userId -> Flow.Types.LeafContinue userId (Data.Array.NonEmpty.singleton (Data.Variant.inj (Type.Proxy.Proxy :: _ "fetchUser") userId)))
+  ( \_ event ->
+      Data.Variant.on (Type.Proxy.Proxy :: _ "userFound")
+        (\userName -> Flow.Types.LeafDone ("User: " <> userName))
+        Data.Variant.case_
+        event
+  )
+
+domainToPlatform
+  :: Flow.Types.Encapsulation
+       (DomainResponse ())
+       (DomainRequest ())
+       (PlatformResponse ())
+       (PlatformRequest ())
+domainToPlatform = Flow.Types.Encapsulation
+  { events: Data.Variant.on (Type.Proxy.Proxy :: _ "httpResult")
+      (\result -> Data.Variant.inj (Type.Proxy.Proxy :: _ "userFound") result)
+      Data.Variant.case_
+  , messages: Data.Variant.on (Type.Proxy.Proxy :: _ "fetchUser")
+      (\userId -> Data.Variant.inj (Type.Proxy.Proxy :: _ "httpGet") ("/api/users/" <> userId))
+      Data.Variant.case_
+  }
+
+encapsulatedWorkflow :: Flow.Types.Workflow (PlatformResponse ()) (PlatformRequest ()) String String
+encapsulatedWorkflow = Flow.Types.encapsulate "HTTP Transport" domainToPlatform fetchUserWorkflow
+
+platformHandler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity (PlatformResponse ()) (PlatformRequest ())
+platformHandler = Data.Variant.on (Type.Proxy.Proxy :: _ "httpGet")
+  (\url -> Data.Identity.Identity (Data.Variant.inj (Type.Proxy.Proxy :: _ "httpResult") ("Alice from " <> url)))
+  Data.Variant.case_
 
 type Document =
   { content :: String
@@ -36,11 +76,8 @@ data ProcessingResult
 parseContent :: String -> Document
 parseContent input =
   { content: input
-  , wordCount: countWords input
+  , wordCount: 10
   }
-  where
-  countWords :: String -> Int
-  countWords s = 10
 
 validateDocument :: Document -> ValidationResult
 validateDocument doc =
@@ -120,34 +157,62 @@ showRetryResult (Flow.Types.RetryResult r) = case r.result of
 
 main :: Effect.Effect Unit
 main = do
-  Effect.Console.log "=== Composition Demo ==="
+  Effect.Console.log "=== Section 1: Event-Driven Reducer (Leaf) ==="
+  Effect.Console.log ""
+  Effect.Console.log "--- Domain Workflow Diagram ---"
+  Effect.Console.log (Flow.Interpret.Diagram.toMermaid fetchUserWorkflow)
+  Effect.Console.log ""
+  Effect.Console.log "--- Domain Workflow Execution (with domain handler) ---"
+  let
+    domainHandler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity (DomainResponse ()) (DomainRequest ())
+    domainHandler = Data.Variant.on (Type.Proxy.Proxy :: _ "fetchUser")
+      (\userId -> Data.Identity.Identity (Data.Variant.inj (Type.Proxy.Proxy :: _ "userFound") ("Bob (id=" <> userId <> ")")))
+      Data.Variant.case_
+    Data.Identity.Identity domainResult = Flow.Interpret.Effect.runWorkflowM domainHandler fetchUserWorkflow "user-42"
+  Effect.Console.log ("Input: user-42")
+  Effect.Console.log ("Output: " <> domainResult)
+
+  Effect.Console.log ""
+  Effect.Console.log "=== Section 2: Encapsulation Layers ==="
+  Effect.Console.log ""
+  Effect.Console.log "--- Encapsulated Workflow Diagram (shows subgraph) ---"
+  Effect.Console.log (Flow.Interpret.Diagram.toMermaid encapsulatedWorkflow)
+  Effect.Console.log ""
+  Effect.Console.log "--- Encapsulated Workflow Execution (with platform handler) ---"
+  let
+    Data.Identity.Identity encapResult = Flow.Interpret.Effect.runWorkflowM platformHandler encapsulatedWorkflow "user-99"
+  Effect.Console.log ("Input: user-99")
+  Effect.Console.log ("Output: " <> encapResult)
+
+  Effect.Console.log ""
+  Effect.Console.log "=== Section 3: Pure Composition (>>>, ***, |||) ==="
   Effect.Console.log ""
   Effect.Console.log "--- Workflow Diagram ---"
   Effect.Console.log (Flow.Interpret.Diagram.toMermaid demoWorkflow)
   Effect.Console.log ""
   Effect.Console.log "--- Execution Result ---"
-  let input = "Hello world, this is a test document for workflow processing."
   let
-    handler :: Flow.Interpret.Effect.EffectHandler Data.Identity.Identity ()
-    handler = Data.Functor.Variant.case_
-    Data.Identity.Identity result = Flow.Interpret.Effect.runWorkflowM handler demoWorkflow input
+    input = "Hello world, this is a test document for workflow processing."
+    compositionResult = Flow.Interpret.Effect.runWorkflow demoWorkflow input
   Effect.Console.log ("Input: " <> input)
-  Effect.Console.log ("Output: " <> showResult result)
+  Effect.Console.log ("Output: " <> showResult compositionResult)
 
   Effect.Console.log ""
-  Effect.Console.log "=== Timeout Demo ==="
+  Effect.Console.log "=== Section 4: Timeout ==="
   Effect.Console.log ""
   Effect.Console.log "--- Workflow Diagram ---"
   Effect.Console.log (Flow.Interpret.Diagram.toMermaid timeoutWorkflow)
   Effect.Console.log ""
   Effect.Console.log "--- Execution Result ---"
   let
+    pureHandler :: Flow.Interpret.Effect.EventHandler Data.Identity.Identity () ()
+    pureHandler = Data.Variant.case_
     Data.Identity.Identity timeoutResult =
-      Flow.Interpret.Effect.runWorkflowM handler timeoutWorkflow "some input"
+      Flow.Interpret.Effect.runWorkflowM pureHandler timeoutWorkflow "some input"
   Effect.Console.log ("Output: " <> showTimeoutResult timeoutResult)
 
   Effect.Console.log ""
-  Effect.Console.log "=== Retry Demo ==="
+  Effect.Console.log "=== Section 5: Retry ==="
   Effect.Console.log ""
   Effect.Console.log "--- Workflow Diagram ---"
   Effect.Console.log (Flow.Interpret.Diagram.toMermaid retryWorkflow)
@@ -155,5 +220,5 @@ main = do
   Effect.Console.log "--- Execution Result ---"
   let
     Data.Identity.Identity retryResult =
-      Flow.Interpret.Effect.runWorkflowM handler retryWorkflow "some input"
+      Flow.Interpret.Effect.runWorkflowM pureHandler retryWorkflow "some input"
   Effect.Console.log ("Output: " <> showRetryResult retryResult)

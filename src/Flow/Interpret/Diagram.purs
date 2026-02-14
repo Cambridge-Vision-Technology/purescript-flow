@@ -42,9 +42,6 @@ addEdge fromId toId = addLine (fromId <> " --> " <> toId)
 addLabeledEdge :: String -> String -> String -> DiagramState -> DiagramState
 addLabeledEdge fromId toId label = addLine (fromId <> " -->|" <> escapeLabel label <> "| " <> toId)
 
-addEffectNode :: String -> String -> DiagramState -> DiagramState
-addEffectNode nodeId label = addLine (nodeId <> "{{" <> escapeLabel label <> "}}")
-
 escapeLabel :: String -> String
 escapeLabel s = Data.String.replaceAll (Data.String.Pattern "\"") (Data.String.Replacement "'") s
 
@@ -100,8 +97,11 @@ processWorkflow (Flow.Types.Par parCps) st =
 processWorkflow (Flow.Types.Choice choiceCps) st =
   processChoiceCPS choiceCps st
 
-processWorkflow (Flow.Types.Request label requestCps) st =
-  processRequestCPS label requestCps st
+processWorkflow (Flow.Types.Leaf label leafCps) st =
+  processLeafCPS label leafCps st
+
+processWorkflow (Flow.Types.Encap label encapCps) st =
+  processEncapCPS label encapCps st
 
 processWorkflow (Flow.Types.MapArray mapArrayCps) st =
   processMapArrayCPS mapArrayCps st
@@ -206,13 +206,28 @@ processChoiceWorkflows leftW rightW st =
   in
     { entryId: decisionId, exitId: mergeId, state: st7 }
 
-processRequestCPS :: forall i o a b. String -> Flow.Types.RequestCPS i o a b -> DiagramState -> NodeResult
-processRequestCPS label (Flow.Types.RequestCPS _) st =
+processLeafCPS :: forall i o a b. String -> Flow.Types.LeafCPS i o a b -> DiagramState -> NodeResult
+processLeafCPS label (Flow.Types.LeafCPS _) st =
   let
-    Data.Tuple.Tuple effectId st' = freshId st
-    st1 = addEffectNode effectId label st'
+    Data.Tuple.Tuple nodeId st' = freshId st
+    st1 = addNode nodeId label st'
   in
-    { entryId: effectId, exitId: effectId, state: st1 }
+    { entryId: nodeId, exitId: nodeId, state: st1 }
+
+processEncapCPS :: forall i o a b. String -> Flow.Types.EncapCPS i o a b -> DiagramState -> NodeResult
+processEncapCPS label (Flow.Types.EncapCPS k) st =
+  k \_ inner ->
+    case label of
+      "" ->
+        processWorkflow inner st
+      _ ->
+        let
+          Data.Tuple.Tuple subgraphId st' = freshId st
+          st1 = addLine ("subgraph encap_" <> subgraphId <> " [" <> escapeLabel label <> "]") st'
+          innerResult = processWorkflow inner st1
+          st2 = addLine "end" innerResult.state
+        in
+          { entryId: innerResult.entryId, exitId: innerResult.exitId, state: st2 }
 
 processMapArrayCPS :: forall i o a b. Flow.Types.MapArrayCPS i o a b -> DiagramState -> NodeResult
 processMapArrayCPS (Flow.Types.MapArrayCPS k) st =
