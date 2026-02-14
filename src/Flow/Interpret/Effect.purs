@@ -67,6 +67,9 @@ runWorkflowM handler (Flow.Types.Timeout timeoutCps) a =
 runWorkflowM handler (Flow.Types.Retry retryCps) a =
   runRetryCPSM handler retryCps a
 
+runWorkflowM handler (Flow.Types.Railway railwayCps) a =
+  runRailwayCPSM handler railwayCps a
+
 runSeqM
   :: forall m i o a b x
    . Monad m
@@ -250,6 +253,24 @@ retryLoop handler policy inner a attempt = do
           let delayMs = calculateBackoff policy attempt
           Flow.Class.Schedule.delay delayMs
           retryLoop handler policy inner a (attempt + 1)
+
+runRailwayCPSM
+  :: forall m i o a b
+   . Monad m
+  => Flow.Class.Schedule.MonadSchedule m
+  => EventHandler m i o
+  -> Flow.Types.RailwayCPS i o a b
+  -> a
+  -> m b
+runRailwayCPSM handler (Flow.Types.RailwayCPS k) a =
+  k \w1 w2 transform -> do
+    result1 <- runWorkflowM handler w1 a
+    case result1 of
+      Data.Either.Left e ->
+        pure (transform (Data.Either.Left e))
+      Data.Either.Right x -> do
+        result2 <- runWorkflowM handler w2 x
+        pure (transform result2)
 
 calculateBackoff :: Flow.Types.RetryPolicy -> Int -> Flow.Types.Milliseconds
 calculateBackoff policy attempt =

@@ -5,7 +5,9 @@ module Flow.Interpret.Diagram
 import Prelude
 
 import Data.Array as Data.Array
+import Data.Either as Data.Either
 import Data.Exists as Data.Exists
+import Data.Maybe as Data.Maybe
 import Data.String as Data.String
 import Data.Tuple as Data.Tuple
 import Flow.Types as Flow.Types
@@ -111,6 +113,9 @@ processWorkflow (Flow.Types.Timeout timeoutCps) st =
 
 processWorkflow (Flow.Types.Retry retryCps) st =
   processRetryCPS retryCps st
+
+processWorkflow (Flow.Types.Railway railwayCps) st =
+  processRailwayCPS railwayCps st
 
 processSeq :: forall i o a b x. DiagramState -> Flow.Types.SeqF i o a b x -> NodeResult
 processSeq st (Flow.Types.SeqF w1 w2) =
@@ -263,3 +268,82 @@ processRetryCPS (Flow.Types.RetryCPS k) st =
       st2 = addLine "end" innerResult.state
     in
       { entryId: innerResult.entryId, exitId: innerResult.exitId, state: st2 }
+
+processRailwayCPS :: forall i o a b. Flow.Types.RailwayCPS i o a b -> DiagramState -> NodeResult
+processRailwayCPS (Flow.Types.RailwayCPS k) st =
+  k \w1 w2 _ ->
+    let
+      Data.Tuple.Tuple subgraphId st' = freshId st
+      st1 = addLine ("subgraph railway_" <> subgraphId <> " [Railway]") st'
+
+      stepResults = collectRailwaySteps w1 w2 st1
+
+      st2 = connectSequential stepResults.results stepResults.state
+      st3 = addLine "end" st2
+
+      Data.Tuple.Tuple errorId st4 = freshId st3
+      st5 = addLine (errorId <> "([Error])") st4
+
+      st6 = addErrorEdges stepResults.results errorId st5
+
+      firstEntry = case Data.Array.head stepResults.results of
+        Data.Maybe.Just r -> r.entryId
+        Data.Maybe.Nothing -> subgraphId
+
+      lastExit = case Data.Array.last stepResults.results of
+        Data.Maybe.Just r -> r.exitId
+        Data.Maybe.Nothing -> subgraphId
+    in
+      { entryId: firstEntry, exitId: lastExit, state: st6 }
+
+type StepCollectResult =
+  { results :: Array NodeResult
+  , state :: DiagramState
+  }
+
+collectRailwaySteps :: forall i o a e x b. Flow.Types.Workflow i o a (Data.Either.Either e x) -> Flow.Types.Workflow i o x (Data.Either.Either e b) -> DiagramState -> StepCollectResult
+collectRailwaySteps w1 w2 st =
+  let
+    leftSteps = collectFromLeft w1 st
+    rest = collectFromRight w2 leftSteps.state
+  in
+    { results: leftSteps.results <> rest.results, state: rest.state }
+
+collectFromLeft :: forall i o a e b. Flow.Types.Workflow i o a (Data.Either.Either e b) -> DiagramState -> StepCollectResult
+collectFromLeft (Flow.Types.Railway railwayCps) st =
+  collectFromLeftRailwayCPS railwayCps st
+collectFromLeft w st =
+  let
+    r = processWorkflow w st
+  in
+    { results: [ r ], state: r.state }
+
+collectFromLeftRailwayCPS :: forall i o a b. Flow.Types.RailwayCPS i o a b -> DiagramState -> StepCollectResult
+collectFromLeftRailwayCPS (Flow.Types.RailwayCPS k) st =
+  k \w1 w2 _ -> collectRailwaySteps w1 w2 st
+
+collectFromRight :: forall i o a e b. Flow.Types.Workflow i o a (Data.Either.Either e b) -> DiagramState -> StepCollectResult
+collectFromRight (Flow.Types.Railway railwayCps) st =
+  collectFromRailwayCPS railwayCps st
+collectFromRight w st =
+  let
+    r = processWorkflow w st
+  in
+    { results: [ r ], state: r.state }
+
+collectFromRailwayCPS :: forall i o a b. Flow.Types.RailwayCPS i o a b -> DiagramState -> StepCollectResult
+collectFromRailwayCPS (Flow.Types.RailwayCPS k) st =
+  k \w1 w2 _ -> collectRailwaySteps w1 w2 st
+
+connectSequential :: Array NodeResult -> DiagramState -> DiagramState
+connectSequential results st = case Data.Array.uncons results of
+  Data.Maybe.Nothing ->
+    st
+  Data.Maybe.Just { head: first, tail } ->
+    (Data.Array.foldl connectPair { prev: first, state: st } tail).state
+  where
+  connectPair acc curr = { prev: curr, state: addEdge acc.prev.exitId curr.entryId acc.state }
+
+addErrorEdges :: Array NodeResult -> String -> DiagramState -> DiagramState
+addErrorEdges results errorId st =
+  Data.Array.foldl (\s r -> addLabeledEdge r.exitId errorId "Err" s) st results

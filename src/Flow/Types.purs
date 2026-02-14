@@ -10,6 +10,7 @@ module Flow.Types
   , MapArrayCPS(..)
   , TimeoutCPS(..)
   , RetryCPS(..)
+  , RailwayCPS(..)
   , mkSeq
   , mkPar
   , mkChoice
@@ -20,6 +21,7 @@ module Flow.Types
   , mkMapArray
   , mkTimeout
   , mkRetry
+  , mkRailway
   , Milliseconds(..)
   , TimeoutError(..)
   , RetryPolicy(..)
@@ -105,6 +107,7 @@ data Workflow (i :: Row Type) (o :: Row Type) a b
   | MapArray (MapArrayCPS i o a b)
   | Timeout (TimeoutCPS i o a b)
   | Retry (RetryCPS i o a b)
+  | Railway (RailwayCPS i o a b)
 
 data SeqF (i :: Row Type) (o :: Row Type) a b x = SeqF (Workflow i o a x) (Workflow i o x b)
 
@@ -264,6 +267,24 @@ mkRetry
   -> Workflow i o a (Data.Either.Either e b)
   -> Workflow i o a (RetryResult e b)
 mkRetry policy inner = Retry (RetryCPS (\k -> k policy inner identity))
+
+newtype RailwayCPS (i :: Row Type) (o :: Row Type) a b = RailwayCPS
+  ( forall r
+     . ( forall e x innerB
+          . Workflow i o a (Data.Either.Either e x)
+         -> Workflow i o x (Data.Either.Either e innerB)
+         -> (Data.Either.Either e innerB -> b)
+         -> r
+       )
+    -> r
+  )
+
+mkRailway
+  :: forall i o a e b c
+   . Workflow i o a (Data.Either.Either e b)
+  -> Workflow i o b (Data.Either.Either e c)
+  -> Workflow i o a (Data.Either.Either e c)
+mkRailway w1 w2 = Railway (RailwayCPS (\k -> k w1 w2 identity))
 
 instance Control.Semigroupoid.Semigroupoid (Workflow i o) where
   compose w2 w1 = mkSeq w1 w2

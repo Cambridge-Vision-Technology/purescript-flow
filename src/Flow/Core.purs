@@ -13,6 +13,7 @@ module Flow.Core
   , timeout
   , retry
   , defaultRetryPolicy
+  , composeK
   ) where
 
 import Prelude hiding ((>>>))
@@ -78,6 +79,13 @@ retry
   -> Flow.Types.Workflow i o a (Data.Either.Either e b)
   -> Flow.Types.Workflow i o a (Flow.Types.RetryResult e b)
 retry = Flow.Types.mkRetry
+
+composeK
+  :: forall i o a e b c
+   . Flow.Types.Workflow i o a (Data.Either.Either e b)
+  -> Flow.Types.Workflow i o b (Data.Either.Either e c)
+  -> Flow.Types.Workflow i o a (Data.Either.Either e c)
+composeK = Flow.Types.mkRailway
 
 defaultRetryPolicy :: Flow.Types.RetryPolicy
 defaultRetryPolicy = Flow.Types.RetryPolicy

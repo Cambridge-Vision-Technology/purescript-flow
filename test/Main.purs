@@ -9,6 +9,7 @@ import Test.Effect as Test.Effect
 import Test.Encapsulation as Test.Encapsulation
 import Test.EndToEnd as Test.EndToEnd
 import Test.Leaf as Test.Leaf
+import Test.Railway as Test.Railway
 import Test.Retry as Test.Retry
 import Test.Spec.Reporter as Test.Spec.Reporter
 import Test.Spec.Runner.Node as Test.Spec.Runner.Node
@@ -22,5 +23,6 @@ main = Test.Spec.Runner.Node.runSpecAndExitProcess [ Test.Spec.Reporter.consoleR
   Test.Encapsulation.spec
   Test.EndToEnd.spec
   Test.Leaf.spec
+  Test.Railway.spec
   Test.Retry.spec
   Test.Timeout.spec
